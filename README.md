@@ -1,14 +1,14 @@
 <h1 align="center">Seahi-Serial-AirTTL</h1>
 
 <p align="center">
-  <b>基于沁恒 CH572 的 2.4G 无线串口调试器</b><br>
+  <b>基于沁恒 CH570Q 的 2.4G 无线串口调试器</b><br>
   一根 USB 接电脑，一台设备放现场 —— 远程调试串口设备
 </p>
 
 <p align="center">
   <img alt="Build Platform" src="https://img.shields.io/badge/build%20platform-Linux-2b7489">
   <img alt="Toolchain" src="https://img.shields.io/badge/toolchain-riscv--wch--elf--gcc12-orange">
-  <img alt="MCU" src="https://img.shields.io/badge/MCU-CH572%20%C2%B7%20RISC--V-green">
+  <img alt="MCU" src="https://img.shields.io/badge/MCU-CH570Q%20%C2%B7%20RISC--V-green">
   <img alt="Wireless" src="https://img.shields.io/badge/2.4G-2M%20PHY-blueviolet">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
@@ -233,7 +233,7 @@ cmake --build build -j"$(nproc)"
 
 ## 六、烧录
 
-两颗芯片都是 **CH572**，用 **WCH-Link** 通过两线调试口烧写。**两个固件都要烧，别烧错**：主机烧 `RF_UartDongle`，从机烧 `RF_Uart`。
+两颗芯片都是 **CH570Q**，用 **WCH-Link** 通过两线调试口烧写。**两个固件都要烧，别烧错**：主机烧 `RF_UartDongle`，从机烧 `RF_Uart`。
 
 ### 方式一：MounRiver Studio 图形界面（推荐）
 
