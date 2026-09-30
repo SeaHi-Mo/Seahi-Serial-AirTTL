@@ -52,17 +52,20 @@ R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN;
 
 ## 三、方法一：OpenOCD 命令行（Linux，推荐）
 
-### 3.0 先解决"OpenOCD 从哪来"
+### 3.0 先确认手上有一份能用的 openocd
 
-必须是**含 `wlinke` 驱动的 WCH 定制版 OpenOCD**——发行版仓库里的 `openocd` **没有这个驱动**，装了也连不上 WCH-Link。三条途径：
+必须是**含 `wlinke` 驱动的 WCH 定制版 OpenOCD** —— 发行版仓库里的 `openocd` **没有这个驱动**，装了也用不了。
 
-| 途径 | 说明 |
+**这是"用现成工具"，不需要自己编译**，来源二选一：
+
+| 来源 | 说明 |
 |---|---|
-| **① 用系统已装的**（最省事） | `openocd --version` 是 WCH 定制版、且能找到 `wch-riscv.cfg` 就直接用。本机即如此：`/usr/local/bin/openocd`（`0.11.0+dev-g2b6802d`，来自 `cjacker/wch-openocd`） |
-| **② 用项目自带源码编译** | 仓库含 `tools/openocd` 子模块 + `tools/build-openocd.sh`。**目前该脚本会卡在内嵌 jimtcl**，见 §3.4 |
-| **③ 自己从源码构建** | `git clone https://github.com/cjacker/wch-openocd` → `./bootstrap` → `./configure --enable-wlinke` → `make`（libjaylink / jimtcl 处理见 §3.4） |
+| **系统已装的**（首选） | 本机即如此：`/usr/local/bin/openocd`（`0.11.0+dev-g2b6802d`），配套 `wch-riscv.cfg` 位于 `/usr/local/share/openocd/scripts/target/` |
+| **MounRiver Studio 自带的** | `$MRS_HOME/toolchain/OpenOCD/bin/openocd` —— MRS 内部烧录用的就是它 |
 
-判断一份 openocd 是否可用：它能加载 `wch-riscv.cfg` 而**不报** `unknown adapter`（`wlinke` 驱动存在）。
+**怎么判断能不能用**：`openocd --version` 是 WCH 定制版，且能加载 `wch-riscv.cfg` 而**不报** `unknown adapter`。
+
+> 若换到一台干净机器、两处都没有，可去 [cjacker/wch-openocd](https://github.com/cjacker/wch-openocd) 取源码编一份（`./bootstrap && ./configure --enable-wlinke && make`）。这属于**一次性装工具**，与下面要讲的烧录流程本身无关。
 
 target 配置内容就是：
 
@@ -74,7 +77,7 @@ wlink_set_address 0x00000000
 # …wch_riscv target + flash bank（地址 0x00000000）
 ```
 
-`tools/openocd/tcl/target/wch-riscv.cfg`（或系统安装路径下的同名文件）就是它；本 skill 的 `scripts/flash.sh` 会**自动按优先级查找**并优先使用项目自带的那份。
+`scripts/flash.sh` 会**自动查找** `openocd` 与 `wch-riscv.cfg`，也支持用环境变量 `OPENOCD_BIN` / `OPENOCD_CFG` 或 `-c` 指定。
 
 ### 3.1 一条命令烧录
 
@@ -125,32 +128,12 @@ skills/coder-ch570q-airttl/scripts/flash.sh --reset                            #
 
 需要"清空绑定、重新配对"时，就是故意全片擦除。
 
-### 3.4 用项目自带源码编译 OpenOCD（`tools/openocd`）
-
-```bash
-./tools/build-openocd.sh          # 目标产物：tools/openocd/src/openocd
-```
-
-脚本会检查依赖（`autoconf` / `automake` / `libtool` / `libusb-1.0-0-dev`）、跑 `./bootstrap` 生成 `configure`，再 `./configure --enable-wlinke` 并 `make`。
-
-**⚠️ 已知问题（尚未完全跑通）**：`cjacker/wch-openocd` 仓库把 `jimtcl`（内嵌 TCL 解释器）与 `libjaylink`（J-Link 支持）的内容以**普通文件**形式部分提交，缺少 `configure` 等生成物。结果是：
-
-- 主项目的 `configure` 能正常生成；但 `configure` 进入 `jimtcl/` 子目录时会因 `jimtcl/configure` 缺失而失败
-- `--disable-internal-libjaylink`（脚本已加）可绕开 J-Link 部分；**jimtcl 仍需手动处理**，例如：
-  ```bash
-  git -C tools/openocd submodule update --init --recursive    # 拉齐 jimtcl / libjaylink
-  cd tools/openocd/jimtcl && ./autosetup/autosetup            # 生成 configure（jimtcl 用 autosetup）
-  ```
-
-**所以当前推荐直接用 §3.0 的途径 ①（系统已装的 WCH 定制版 openocd）**，把项目子模块当作源码参考与 `wch-riscv.cfg` 的来源。
-
-### 3.5 验证状态（诚实说明）
+### 3.4 验证状态（诚实说明）
 
 | ✅ 已验证 | ❌ 未验证 |
 |---|---|
 | WCH 定制版 openocd 能加载 `wch-riscv.cfg`，输出 `Ready for Remote Connections` | **没有接入 WCH-Link 硬件，无法验证真实连接、擦写与校验** |
-| `tools/build-openocd.sh` 的依赖检查、bootstrap、主项目 configure 可走通 | 编译产物 `src/openocd` 尚未产出（卡在 jimtcl，见 §3.4） |
-| 无设备时停在 `Error: open failed` —— 说明 wlinke 驱动加载正常，仅缺硬件 | `program` / `verify` 的真实执行结果 |
+| 无设备时停在 `Error: open failed` —— 说明 `wlinke` 驱动加载正常，仅缺硬件 | `program` / `verify` 的真实执行结果 |
 
 也就是说：**本文的命令与参数取自 MRS 工程配置（`RF_Uart.launch`）与已验证可用的 FlashKey 烧录脚本，语法正确、路径已核实；但"真机烧录成功"必须由你接上 WCH-Link 后实测确认。**
 

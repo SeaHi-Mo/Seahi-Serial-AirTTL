@@ -290,7 +290,7 @@ cd ../RF_UartDongle && cmake -B build -G "Unix Makefiles" && cmake --build build
 
 两颗都是 CH570Q，用 **WCH-Link / WCH-LinkE**（SDI 单线调试接口）烧写。**主机烧 `RF_UartDongle`，从机烧 `RF_Uart`，别烧错。**
 
-**完整烧录指南见 [references/flashing.md](./references/flashing.md)** —— 含"OpenOCD 从哪来"、各烧录模式（普通 / 擦除重写 / 解除读保护 / 全片擦除）、**别擦掉从机绑定信息**、编译自带 OpenOCD 的已知坑，以及验证状态说明。最常用的一条命令：
+**完整烧录指南见 [references/flashing.md](./references/flashing.md)** —— 含"该用哪份 OpenOCD"、各烧录模式（普通 / 擦除重写 / 解除读保护 / 全片擦除）、**别擦掉从机绑定信息**，以及验证状态说明。最常用的一条命令：
 
 ```bash
 # skill 自带脚本：自动查找 OpenOCD 与 wch-riscv.cfg，烧录 + 校验 + 复位
@@ -383,7 +383,7 @@ git tag -a v0.1.1 -m "..." && git push origin v0.1.1
 | [wch-stdperiph-api.md](./references/wch-stdperiph-api.md) | 沁恒**标准外设库** API：CLK / GPIO / UART / Flash / SYS / TMR / PWM / SPI / I2C / PWR / USB设备 / USB主机 / CMP / KeyScan / ISP | 配引脚、设时钟、读写 Flash、开关中断 |
 | [rf-stack-api.md](./references/rf-stack-api.md) | 沁恒 **2.4G 协议栈**（`CH572rf.h`）+ **RISC-V 内核层**（`core_riscv.h`）：`RFRole_*` / `RFIP_*`、CSR 操作、`PFIC_*` 中断控制、`__MCPY` 等 xw 扩展、`__HIGH_CODE` | 调射频参数、写中断、理解 `.highcode` |
 | [chip-spec.md](./references/chip-spec.md) | **CH570Q 芯片规格**：系列差异、内核/存储与地址映射、外设基址、CH570Q 引脚表、PA0/PA1 调试口约束、复位脚可选 PA7/PA8、电气与低功耗参数、2.4G 射频参数 | 查硬件规格、核对接线、调低功耗 |
-| [flashing.md](./references/flashing.md) | **烧录与调试指南**：OpenOCD 从哪来、各烧录模式、解除读保护、别擦掉绑定信息、GDB 调试、自带 OpenOCD 的编译坑与验证状态 | 烧写、排查烧录问题 |
+| [flashing.md](./references/flashing.md) | **烧录与调试指南**：该用哪份 WCH 定制版 OpenOCD、各烧录模式、解除读保护、别擦掉绑定信息、GDB 调试、验证状态 | 烧写、排查烧录问题 |
 | [resources.md](./references/resources.md) | 数据手册、工具链、烧写调试工具、外部资料入口 | 查手册、找工具 |
 
 > **三层 API 的修改权限不同**：**APP 层**（本项目所写，可自由改）→ **协议栈 / 外设库**（沁恒预编译库与官方驱动，**只调用不修改**）→ **内核层**（`core_riscv.h`，RISC-V 抽象，只调用）。

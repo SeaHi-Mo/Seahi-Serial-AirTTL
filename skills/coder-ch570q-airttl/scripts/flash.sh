@@ -9,17 +9,22 @@
 set -euo pipefail
 
 # ---------- 默认配置 ----------
-REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 CFG="${OPENOCD_CFG:-}"
 MODE="verify"
 FIRMWARE=""
-# 优先用项目自带的 OpenOCD（tools/openocd 子模块编译产物），否则回退到系统安装的
-if [ -n "${OPENOCD_BIN:-}" ]; then
-    :                                                       # 用户已显式指定
-elif [ -x "$REPO_ROOT/tools/openocd/src/openocd" ]; then
-    OPENOCD_BIN="$REPO_ROOT/tools/openocd/src/openocd"
-else
-    OPENOCD_BIN="openocd"
+# 找一个可用的 WCH 定制版 OpenOCD：环境变量 > PATH > MounRiver Studio 自带
+if [ -z "${OPENOCD_BIN:-}" ]; then
+    if command -v openocd >/dev/null 2>&1; then
+        OPENOCD_BIN="openocd"
+    else
+        for cand in \
+            "$HOME/MounRiver_Studio2/toolchain/OpenOCD/bin/openocd" \
+            "/opt/MounRiver_Studio2/toolchain/OpenOCD/bin/openocd"
+        do
+            [ -x "$cand" ] && { OPENOCD_BIN="$cand"; break; }
+        done
+        [ -z "${OPENOCD_BIN:-}" ] && OPENOCD_BIN="openocd"   # 找不到也先赋值，由后面统一报错
+    fi
 fi
 
 usage() {
@@ -64,9 +69,9 @@ done
 # ---------- 查找 OpenOCD 配置 ----------
 if [ -z "$CFG" ]; then
     for c in \
-        "$REPO_ROOT/tools/openocd/tcl/target/wch-riscv.cfg" \
         /usr/local/share/openocd/scripts/target/wch-riscv.cfg \
         /usr/share/openocd/scripts/target/wch-riscv.cfg \
+        "$HOME/MounRiver_Studio2/toolchain/OpenOCD/bin/wch-riscv.cfg" \
         "$(dirname "$0")/wch-riscv.cfg"
     do
         if [ -f "$c" ]; then CFG="$c"; break; fi
@@ -74,10 +79,10 @@ if [ -z "$CFG" ]; then
 fi
 if [ -z "$CFG" ] || [ ! -f "$CFG" ]; then
     echo "❌ 找不到 OpenOCD 配置 wch-riscv.cfg" >&2
-    echo "   可尝试：" >&2
-    echo "     ./tools/build-openocd.sh    # 编译项目自带源码（tools/openocd 子模块）" >&2
-    echo "     或安装/自建 WCH 定制版 OpenOCD，并用 -c 指定其 wch-riscv.cfg 路径" >&2
-    echo "   注意：必须是含 wlinke 驱动的 WCH 定制版；发行版自带的 openocd 不含该驱动" >&2
+    echo "   需要一份含 wlinke 驱动的 WCH 定制版 OpenOCD（发行版自带的没有该驱动）：" >&2
+    echo "     · 系统已装：/usr/local/share/openocd/scripts/target/wch-riscv.cfg" >&2
+    echo "     · MounRiver Studio 自带：\$MRS_HOME/toolchain/OpenOCD/bin/" >&2
+    echo "   也可用 -c <path> 或环境变量 OPENOCD_CFG 指定其它位置的 wch-riscv.cfg" >&2
     exit 1
 fi
 
@@ -146,7 +151,7 @@ if ! "$OPENOCD_BIN" -f "$CFG" "${CMDS[@]}"; then
     echo "❌ 烧录失败。排查顺序：" >&2
     echo "   1) WCH-Link 是否插好、是否被系统识别（lsusb）" >&2
     echo "   2) 目标板是否已上电、GND 是否共地" >&2
-    echo "   3) 固件运行中会关闭两线调试 —— 给目标板断电重上电后立刻重试" >&2
+    echo "   3) 固件运行中会关闭仿真调试接口（PA0/PA1 让给串口）—— 给目标板断电重上电后立刻重试" >&2
     echo "   4) 报 flash protected 时改用: $0 -m unlock-program <firmware.hex>" >&2
     exit 1
 fi
