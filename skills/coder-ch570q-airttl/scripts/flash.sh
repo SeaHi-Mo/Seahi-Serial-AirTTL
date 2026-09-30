@@ -12,18 +12,38 @@ set -euo pipefail
 CFG="${OPENOCD_CFG:-}"
 MODE="verify"
 FIRMWARE=""
-# 找一个可用的 WCH 定制版 OpenOCD：环境变量 > PATH > MounRiver Studio 自带
+# ---------- 挑选一份「支持 wlinke」的 OpenOCD ----------
+# 发行版仓库里的 openocd（如 0.10.0）没有 wlinke 驱动，装了也连不上 WCH-Link，
+# 所以不能只看命令是否存在，必须逐个校验驱动。
+supports_wlinke() {
+    local bin="$1" out
+    [ -n "$bin" ] || return 1
+    if [ -x "$bin" ]; then :; elif command -v "$bin" >/dev/null 2>&1; then :; else return 1; fi
+    # 用 shutdown 而不是 exit：后者要求先 init（会以非 0 退出，误判）。
+    # 不支持时 openocd 会报 "invalid command name \"adapter\""（0.10 老版本）
+    # 或 "unknown adapter"（新版本但未编入 wlinke 驱动）。
+    out=$("$bin" -c "adapter driver wlinke" -c "shutdown" 2>&1)
+    case "$out" in
+        *"invalid command name"*|*"unknown adapter"*|*"Unrecognized"*) return 1 ;;
+    esac
+    return 0
+}
+
 if [ -z "${OPENOCD_BIN:-}" ]; then
-    if command -v openocd >/dev/null 2>&1; then
-        OPENOCD_BIN="openocd"
+    # ① PATH 里的 openocd（但要确认它真的带 wlinke）
+    if command -v openocd >/dev/null 2>&1 && supports_wlinke "$(command -v openocd)"; then
+        OPENOCD_BIN="$(command -v openocd)"
     else
+        # ② 系统已装的 WCH 定制版 ③ FlashKey 随 flashkey-mcp 分发的 Linux 版 ④ MRS 自带
         for cand in \
+            /usr/local/bin/openocd \
+            "$HOME"/.local/venvs/flashkey-mcp/lib/python*/site-packages/flashkey_mcp/openocd/bin/linux-x64/openocd \
+            "$HOME"/.local/lib/python*/site-packages/flashkey_mcp/openocd/bin/linux-x64/openocd \
             "$HOME/MounRiver_Studio2/toolchain/OpenOCD/bin/openocd" \
             "/opt/MounRiver_Studio2/toolchain/OpenOCD/bin/openocd"
         do
-            [ -x "$cand" ] && { OPENOCD_BIN="$cand"; break; }
+            if supports_wlinke "$cand"; then OPENOCD_BIN="$cand"; break; fi
         done
-        [ -z "${OPENOCD_BIN:-}" ] && OPENOCD_BIN="openocd"   # 找不到也先赋值，由后面统一报错
     fi
 fi
 
@@ -86,8 +106,19 @@ if [ -z "$CFG" ] || [ ! -f "$CFG" ]; then
     exit 1
 fi
 
-command -v "$OPENOCD_BIN" >/dev/null 2>&1 || {
-    echo "❌ 找不到 openocd 可执行文件：$OPENOCD_BIN" >&2; exit 1; }
+# ---------- 确认真的拿到了一份可用的 openocd ----------
+if [ -z "${OPENOCD_BIN:-}" ]; then
+    echo "❌ 没找到可用的 WCH 定制版 OpenOCD（必须含 wlinke 驱动）" >&2
+    echo "   注意：发行版仓库自带的 openocd【没有】wlinke 驱动，装了也连不上 WCH-Link。" >&2
+    echo "   可用来源（任选其一，或用环境变量 OPENOCD_BIN 显式指定）：" >&2
+    echo "     · 系统已装：/usr/local/bin/openocd" >&2
+    echo "     · MounRiver Studio 自带：\$MRS_HOME/toolchain/OpenOCD/bin/openocd" >&2
+    echo "     · 安信可 FlashKey 分发的 Linux 版（随 flashkey-mcp 包）" >&2
+    exit 1
+elif ! supports_wlinke "$OPENOCD_BIN"; then
+    echo "⚠️  指定的 openocd 未通过 wlinke 驱动自检：$OPENOCD_BIN" >&2
+    echo "    （若它确是 WCH 定制版，可忽略此提示继续）" >&2
+fi
 
 # ---------- 固件检查（reset 模式除外） ----------
 NEED_FW=1
