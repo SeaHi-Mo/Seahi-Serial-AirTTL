@@ -1,0 +1,263 @@
+# 烧录与调试指南
+
+> 两颗芯片都是 **CH570Q**，通过 **WCH-Link / WCH-LinkE** 用 **SDI 单线调试接口**（WCH 私有两线/SDI）烧写。
+> **主机烧 `RF_UartDongle`，从机烧 `RF_Uart`，别烧错。** 详细对照表见本文第七节。
+
+---
+
+## 一、硬件准备
+
+| 项 | 说明 |
+|---|---|
+| 调试器 | **WCH-Link** 或 **WCH-LinkE**（推荐 E，OpenOCD 用 `wlinke` 驱动） |
+| 接口 | **SDI**（WCH Single-wire Debug Interface）。WCH-Link 上对应 `SWCLK`/`SWDIO`（部分丝印为 `DIO`/`CLK`）+ `GND`，必要时接 `3V3` |
+| 目标板 | CH570Q 从机板 / Dongle。**GND 必须共地** |
+| 供电 | 目标板可自供电，也可由 WCH-Link 的 3V3 供电（注意电流余量） |
+
+> 本项目**没有**引出独立的调试排针，需要焊线或飞线到芯片的两线调试脚；从机的 PA2/PA3 已被"一键下载"功能占用（见下节）。
+
+---
+
+## 二、⚠️ 两个最容易卡住的前提（先读这段）
+
+### 1. 两个固件运行起来后都会**关闭仿真调试接口**
+
+```c
+/* RF_Uart/APP/uart.c:299  （从机 UART_Init） */
+R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN;
+
+/* RF_UartDongle/APP/usb_uart.c:1975（主机 USB_Init） */
+R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN;
+```
+
+**为什么非关不可**（数据手册 §1.2 注 3 原文）：
+
+> 系统上电或复位后**默认调试接口引脚功能开启**……仿真调试接口启用后，**PA0 和 PA1 仅用作 SWDIO 和 SWCLK**，不再用于 GPIO 或外设复用功能引脚。
+
+而本项目从机恰恰要用 **PA0 = UART TXD、PA1 = UART RXD**——不关，这两个脚就当不了串口。
+
+后果是：**固件一跑起来，WCH-Link 就连不上了**（更多引脚约束见 [chip-spec.md](./chip-spec.md) 第五节）。
+
+**对策（按推荐顺序）**：
+
+1. **让 WCH-Link 在复位瞬间抓住芯片**：`init` 后紧跟 `halt`（本文所有命令都是这个顺序）
+2. 失败就**给目标板断电、重新上电**，趁固件还没跑起来（或复用窗口）立刻执行烧录
+3. 仍失败：先执行"只复位不烧录"（`scripts/flash.sh --reset`）把芯片停住，再烧
+
+### 2. 从机的 PA2/PA3 是"一键下载"输出脚
+
+`DTR_RTS_FUNC == FALSE`（默认）时，PA2 = `RESET_PIN`、PA3 = `BOOT_PIN`，固件会在这两个脚上产生电平跳变。若你同时用它们接目标板的 RESET/BOOT，**烧写从机前先断开这两根线**，避免复位时序打架。
+
+---
+
+## 三、方法一：OpenOCD 命令行（Linux，推荐）
+
+### 3.0 先解决"OpenOCD 从哪来"
+
+必须是**含 `wlinke` 驱动的 WCH 定制版 OpenOCD**——发行版仓库里的 `openocd` **没有这个驱动**，装了也连不上 WCH-Link。三条途径：
+
+| 途径 | 说明 |
+|---|---|
+| **① 用系统已装的**（最省事） | `openocd --version` 是 WCH 定制版、且能找到 `wch-riscv.cfg` 就直接用。本机即如此：`/usr/local/bin/openocd`（`0.11.0+dev-g2b6802d`，来自 `cjacker/wch-openocd`） |
+| **② 用项目自带源码编译** | 仓库含 `tools/openocd` 子模块 + `tools/build-openocd.sh`。**目前该脚本会卡在内嵌 jimtcl**，见 §3.4 |
+| **③ 自己从源码构建** | `git clone https://github.com/cjacker/wch-openocd` → `./bootstrap` → `./configure --enable-wlinke` → `make`（libjaylink / jimtcl 处理见 §3.4） |
+
+判断一份 openocd 是否可用：它能加载 `wch-riscv.cfg` 而**不报** `unknown adapter`（`wlinke` 驱动存在）。
+
+target 配置内容就是：
+
+```tcl
+adapter driver wlinke          # WCH-Link / WCH-LinkE
+adapter speed 6000
+transport select sdi           # WCH 的 SDI 单线调试接口
+wlink_set_address 0x00000000
+# …wch_riscv target + flash bank（地址 0x00000000）
+```
+
+`tools/openocd/tcl/target/wch-riscv.cfg`（或系统安装路径下的同名文件）就是它；本 skill 的 `scripts/flash.sh` 会**自动按优先级查找**并优先使用项目自带的那份。
+
+### 3.1 一条命令烧录
+
+```bash
+cd Seahi-Serial-AirTTL
+
+# 烧从机
+openocd -f /usr/local/share/openocd/scripts/target/wch-riscv.cfg \
+  -c "init" -c "halt" \
+  -c "program RF_Uart/build/RF_Uart.hex verify" \
+  -c "reset" -c "exit"
+
+# 烧主机
+openocd -f /usr/local/share/openocd/scripts/target/wch-riscv.cfg \
+  -c "init" -c "halt" \
+  -c "program RF_UartDongle/build/RF_UartDongle.hex verify" \
+  -c "reset" -c "exit"
+```
+
+或用本 skill 附带的脚本（自动找配置、支持多种模式）：
+
+```bash
+skills/coder-ch570q-airttl/scripts/flash.sh RF_Uart/build/RF_Uart.hex          # 烧 + 校验 + 复位
+skills/coder-ch570q-airttl/scripts/flash.sh --erase-program RF_Uart/build/RF_Uart.hex
+skills/coder-ch570q-airttl/scripts/flash.sh --unlock-program RF_Uart/build/RF_Uart.hex
+skills/coder-ch570q-airttl/scripts/flash.sh --reset                            # 只复位，不烧
+```
+
+### 3.2 各模式的区别
+
+| 模式 | OpenOCD 命令 | 何时用 |
+|---|---|---|
+| **烧录+校验**（默认） | `program <hex> verify` | 日常烧写 |
+| 只校验 | `verify_image <hex>` | 确认上次烧写是否成功 |
+| 擦除后烧写 | `flash write_image erase <hex>` + `verify_image <hex>` | `program` 失败时 |
+| **解除读保护后烧写** | `flash erase_address unlock 0x00000000 0x10000` + `flash write_image <hex>` + `flash verify_image <hex>` | 芯片被写保护 / 报 "flash protected" |
+| 只复位 | `init` + `halt`（或 + `reset`） | 连不上时"停住"芯片 |
+| 全片擦除 | `flash erase_sector 0 0 last` | 需要彻底清空（**会连绑定信息一起清掉**） |
+
+> `reset` 让芯片复位后**继续运行**；`reset halt` 是复位后**停在入口等 GDB**。做纯烧录用 `reset`。
+
+### 3.3 本项目**特有**的一件事：别把绑定信息擦掉
+
+从机把配对信息存在 **Flash 偏移 `1024*236`（0xF0000）** 的 4 KB 扇区里（`BOUND_INFO_FLASH_ADDR`）。
+
+- 常规 `program` 只写固件区，**不会**碰它 → 重新烧固件后仍能自动回连
+- 但 `flash erase_sector` 全片擦除会把它清掉 → 需要**重新贴近配对**（首次配对要求 RSSI > −35 dBm）
+
+需要"清空绑定、重新配对"时，就是故意全片擦除。
+
+### 3.4 用项目自带源码编译 OpenOCD（`tools/openocd`）
+
+```bash
+./tools/build-openocd.sh          # 目标产物：tools/openocd/src/openocd
+```
+
+脚本会检查依赖（`autoconf` / `automake` / `libtool` / `libusb-1.0-0-dev`）、跑 `./bootstrap` 生成 `configure`，再 `./configure --enable-wlinke` 并 `make`。
+
+**⚠️ 已知问题（尚未完全跑通）**：`cjacker/wch-openocd` 仓库把 `jimtcl`（内嵌 TCL 解释器）与 `libjaylink`（J-Link 支持）的内容以**普通文件**形式部分提交，缺少 `configure` 等生成物。结果是：
+
+- 主项目的 `configure` 能正常生成；但 `configure` 进入 `jimtcl/` 子目录时会因 `jimtcl/configure` 缺失而失败
+- `--disable-internal-libjaylink`（脚本已加）可绕开 J-Link 部分；**jimtcl 仍需手动处理**，例如：
+  ```bash
+  git -C tools/openocd submodule update --init --recursive    # 拉齐 jimtcl / libjaylink
+  cd tools/openocd/jimtcl && ./autosetup/autosetup            # 生成 configure（jimtcl 用 autosetup）
+  ```
+
+**所以当前推荐直接用 §3.0 的途径 ①（系统已装的 WCH 定制版 openocd）**，把项目子模块当作源码参考与 `wch-riscv.cfg` 的来源。
+
+### 3.5 验证状态（诚实说明）
+
+| ✅ 已验证 | ❌ 未验证 |
+|---|---|
+| WCH 定制版 openocd 能加载 `wch-riscv.cfg`，输出 `Ready for Remote Connections` | **没有接入 WCH-Link 硬件，无法验证真实连接、擦写与校验** |
+| `tools/build-openocd.sh` 的依赖检查、bootstrap、主项目 configure 可走通 | 编译产物 `src/openocd` 尚未产出（卡在 jimtcl，见 §3.4） |
+| 无设备时停在 `Error: open failed` —— 说明 wlinke 驱动加载正常，仅缺硬件 | `program` / `verify` 的真实执行结果 |
+
+也就是说：**本文的命令与参数取自 MRS 工程配置（`RF_Uart.launch`）与已验证可用的 FlashKey 烧录脚本，语法正确、路径已核实；但"真机烧录成功"必须由你接上 WCH-Link 后实测确认。**
+
+---
+
+## 四、方法二：OpenOCD + GDB（要调试时用）
+
+### 4.1 起 GDB Server（前台/后台）
+
+```bash
+openocd -f /usr/local/share/openocd/scripts/target/wch-riscv.cfg
+# 端口：GDB 3333 / Telnet 4444 / Tcl 6666（与工程 .launch 一致）
+```
+
+### 4.2 用 GDB 加载并运行
+
+```bash
+tools/toolchain/bin/riscv-wch-elf-gdb RF_Uart/build/RF_Uart.elf \
+  -ex "set architecture riscv:rv32" \
+  -ex "set mem inaccessible-by-default off" \
+  -ex "target extended-remote localhost:3333" \
+  -ex "load" \
+  -ex "monitor reset halt" \
+  -ex "detach" -ex "quit"
+```
+
+这几个 `-ex` 参数与工程自带的 `RF_Uart.launch` 一致（MRS 用的也是同样端口和命令），照抄即可。反汇编若要正确显示 `mcpy` 等 xw 指令，加 `-ex "set disassembler-options xw"`。
+
+---
+
+## 五、方法三：MounRiver Studio（图形界面，最省事）
+
+1. 打开 MRS，`File → Import` 导入 `RF_Uart` / `RF_UartDongle` 工程
+2. WCH-Link 接上目标板，选中工程 → 工具栏 **Download**
+3. MRS 内部就是 OpenOCD + GDB（配置见 `RF_Uart.launch`：`wch-dual-core.cfg`，端口 3333/4444/6666）
+
+> `.launch` 里引用的 `wch-dual-core.cfg` 是 MRS 自带的；命令行方式用 `wch-riscv.cfg` 等效（都是 `wlinke` + `sdi`）。
+
+---
+
+## 六、方法四：Windows 官方工具（备选）
+
+| 工具 | 用途 |
+|---|---|
+| **WCH-LinkUtility** | 图形化烧写/读保护设置，配 WCH-Link 使用 |
+| **WCHISPTool** | USB/串口 ISP 下载（把芯片置于 BOOT 模式后经 USB 或串口烧写），不依赖 WCH-Link |
+
+两者均在沁恒官网下载中心获取（见 [resources.md](./resources.md)）。本项目日常开发用方法一/三即可。
+
+---
+
+## 七、烧哪个固件？
+
+| 产物 | 角色 | 烧到哪块板 | 烧错的表现 |
+|---|---|---|---|
+| `RF_Uart/build/RF_Uart.hex` | **从机**（接被调试设备） | 从机板（UART 侧） | 板子上没有 `/dev/ttyUSB*`，主机 USB 不枚举 |
+| `RF_UartDongle/build/RF_UartDongle.hex` | **主机**（插电脑） | Dongle（USB 侧） | 从机不广播、电脑端没有虚拟串口 |
+
+两者都烧好后才可能配对成功。发版页 `/releases` 上的文件名就是 `RF_Uart_<版本>.hex` / `RF_UartDongle_<版本>.hex`。
+
+---
+
+## 八、怎么确认烧录成功
+
+| 手段 | 从机 | 主机 |
+|---|---|---|
+| OpenOCD 输出 | 出现 `** Verified OK **` | 同 |
+| 串口/调试口 | 复位后打印 `start.` + RF 库版本（从机默认 `DEBUG` 关，需打开才有输出） | 带 `-DDEBUG`，PA3/PA2 会打印 `start.` 与库版本 |
+| LED（PA7） | 未绑定：常灭/微弱；绑定后长亮闪烁 | 同理 |
+| 功能验证 | 电脑端出现 `/dev/ttyUSB*`，串口工具收发正常即链路通 | — |
+
+只校验不烧录：
+
+```bash
+openocd -f /usr/local/share/openocd/scripts/target/wch-riscv.cfg \
+  -c "init" -c "halt" -c "verify_image RF_Uart/build/RF_Uart.hex" -c "exit"
+```
+
+---
+
+## 九、常见问题
+
+| 现象 | 原因 / 解决 |
+|---|---|
+| `Error: open failed` | 没检测到 WCH-Link：检查 USB、驱动；要装 `libusb`/udev 规则（Linux 下建议把 WCH-Link 的 USB 权限放开） |
+| `Ready for Remote Connections` 后连不上芯片 | **固件已关闭两线调试**（第二节）——断电重上电，或先 `init`+`halt` 抢在固件运行前；多次重试 |
+| `flash protected` / 写不进去 | 芯片处于读/写保护：用 `--unlock-program`（`flash erase_address unlock`）模式 |
+| `program` 报校验失败 | 先 `flash write_image erase` 再 `verify_image`；仍失败考虑全片擦除后重烧 |
+| 烧完不运行 | 命令里加了 `reset halt` 会停在入口，改成 `reset`（或 GDB 里 `continue`/`detach`） |
+| 烧从机后无法再连 WCH-Link | 正常现象（调试口被复用）。断电重上电后再烧 |
+| 两个固件都新烧了却连不上 | 检查两端 `rf.h` 的频点/PHY/`AA`/`CRC_*` 是否同批；首次配对要贴近（RSSI > −35 dBm） |
+| Windows 上 MRS 能烧、命令行不行 | 命令行需用 WCH 定制版 OpenOCD（带 `wlinke` 驱动），发行版 `openocd` 不含该驱动 |
+
+---
+
+## 十、快速对照：最小可用流程
+
+```bash
+# 1) 编译（工具链随仓库提供）
+cd RF_Uart        && cmake -B build -G "Unix Makefiles" && cmake --build build -j$(nproc)
+cd ../RF_UartDongle && cmake -B build -G "Unix Makefiles" && cmake --build build -j$(nproc)
+
+# 2) 接 WCH-Link 到目标板（SDI + GND）
+
+# 3) 烧录（分别对两块板执行）
+skills/coder-ch570q-airttl/scripts/flash.sh RF_Uart/build/RF_Uart.hex
+skills/coder-ch570q-airttl/scripts/flash.sh RF_UartDongle/build/RF_UartDongle.hex
+
+# 4) 首次配对：把两块板贴近，上电；从机串口出现 "bound success." 即成功
+```

@@ -138,7 +138,7 @@ struct simple_buf {
 
 | 原型 | 作用 | 返回值 / 注意 |
 |---|---|---|
-| `void UART_Init(void)` | 初始化：LED/DTR-RTS 或 RESET-BOOT 引脚、**关闭两线调试**（`R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN`）、`UART_Remap(PA0/PA1)`、默认 115200、4 字节触发、开接收中断、启动定时器 | 无 |
+| `void UART_Init(void)` | 初始化：LED/DTR-RTS 或 RESET-BOOT 引脚、**关闭仿真调试接口**（`R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN`——手册 §1.2 规定 PA0/PA1 上电默认是 SWDIO/SWCLK，不关就用不了串口）、`UART_Remap(PA0/PA1)`、默认 115200、4 字节触发、开接收中断、启动定时器 | 无 |
 | `uint8_t UART_RxQuery(void *buf, typeBufSize *len)` | **从机业务层取"要发去无线的数据"** | `0` = 有数据（`*len` 为长度）；`0x80` = 只有"事件"（`UART_STATUS_SEND`，用于触发发状态查询）；`0xFF` = 无事件 |
 | `void UART_SetBuad(uint32_t buad)` | 按当前 `gSysClock` 重算分频写 `R16_UART_DL` | 与上次相同则直接返回；会打印 `bsp = N` |
 | `void UART_SetTimer(uint16_t ms)` | 设置定时器周期（按 `gSysClock/2000*ms`） | 用于绑定广播间隔 / 连接轮询间隔 |
@@ -224,7 +224,7 @@ extern LINE_CODE Uart0Para;   /* 电脑端当前的串口线码 */
 
 | 原型 | 作用 | 返回值 / 注意 |
 |---|---|---|
-| `void USB_Init(void)` | 关闭两线调试、初始化 USB 设备参数与端点、使能 `USB_IRQn`、建 USB 环形缓冲 | 无 |
+| `void USB_Init(void)` | 关闭仿真调试接口（同 `UART_Init`，解除 PA0/PA1 的调试占用）、初始化 USB 设备参数与端点、使能 `USB_IRQn`、建 USB 环形缓冲 | 无 |
 | `void USB_StatusQuery(void)` | **主机主循环体**（`main.c` 里 `while(1)` 调用）。处理 USB 中断标志；当 EP2 IN 空闲时调 `RF_RxQuery()` 把无线数据放进 `Ep2Buffer[64]` 并 ACK 上传 | 无 |
 | `uint8_t USB_RxQuery(void *buf, typeBufSize *len)` | **主机业务取"要发去无线的数据"** | `0` = 有数据；`0x80` = **线码有变化**（`UART_Status`，业务层据此发 `OPCODE_BSP`）；`0xFF` = 无事件 |
 

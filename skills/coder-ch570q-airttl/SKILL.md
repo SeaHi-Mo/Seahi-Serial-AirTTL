@@ -58,7 +58,7 @@ description: SeaHi-Serial-AirTTL 项目开发指南——基于沁恒 CH570Q 的
 | `PA2` | `RESET_PIN`（默认） | 一键下载用，接目标板 RESET；`DTR_RTS_FUNC=TRUE` 时改为 `DTR_PIN` |
 | `PA3` | `BOOT_PIN`（默认） | 接目标板 BOOT0；`DTR_RTS_FUNC=TRUE` 时改为 `RTS_PIN` |
 | `PA7` | LED（`LED_FUNC`） | 收发翻转；绑定后用 50000 次循环的长亮表示 |
-| 两线调试口 | WCH-Link | **固件运行时会关闭**（`R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN`），下载失败先断电重上电 |
+| 两线调试口 | WCH-Link | 据手册 §1.2：**PA0/PA1 上电后默认被仿真调试口占用**，所以固件运行时会**主动关闭**它（`R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN`）才能把 PA0/PA1 当串口用；代价是下载失败时要**断电重上电** |
 
 从机默认 **115200-8-N-1**，上电后由主机下发的线码覆盖。**务必 GND 共地。**
 
@@ -288,21 +288,23 @@ cd ../RF_UartDongle && cmake -B build -G "Unix Makefiles" && cmake --build build
 
 ### 烧写
 
-两颗都是 CH570Q，用 WCH-Link 两线调试口。**主机烧 `RF_UartDongle`，从机烧 `RF_Uart`，别烧错。**
+两颗都是 CH570Q，用 **WCH-Link / WCH-LinkE**（SDI 单线调试接口）烧写。**主机烧 `RF_UartDongle`，从机烧 `RF_Uart`，别烧错。**
+
+**完整烧录指南见 [references/flashing.md](./references/flashing.md)** —— 含"OpenOCD 从哪来"、各烧录模式（普通 / 擦除重写 / 解除读保护 / 全片擦除）、**别擦掉从机绑定信息**、编译自带 OpenOCD 的已知坑，以及验证状态说明。最常用的一条命令：
 
 ```bash
-# OpenOCD 起 GDB Server（端口 3333/telnet 4444/tcl 6666）
-"$OPENOCD_BIN/openocd" -f "$OPENOCD_BIN/wch-dual-core.cfg" &
+# skill 自带脚本：自动查找 OpenOCD 与 wch-riscv.cfg，烧录 + 校验 + 复位
+skills/coder-ch570q-airttl/scripts/flash.sh RF_Uart/build/RF_Uart.hex
+skills/coder-ch570q-airttl/scripts/flash.sh RF_UartDongle/build/RF_UartDongle.hex
 
-# GDB 下载（GDB 可直接用子模块里的）
-tools/toolchain/bin/riscv-wch-elf-gdb build/RF_Uart.elf \
-  -ex "set architecture riscv:rv32" \
-  -ex "set mem inaccessible-by-default off" \
-  -ex "target extended-remote localhost:3333" \
-  -ex "load" -ex "monitor reset halt" -ex "detach" -ex "quit"
+# 连不上时先"停住"芯片；报 flash protected 时解除读保护
+skills/coder-ch570q-airttl/scripts/flash.sh -m reset
+skills/coder-ch570q-airttl/scripts/flash.sh -m unlock-program RF_Uart/build/RF_Uart.hex
 ```
 
-> 从机固件运行时会**关闭两线调试**（腾引脚给串口），下载失败先给板子**断电重上电**。
+⚠️ **两个前提**：① 两个固件运行后都会**关闭仿真调试接口**（手册 §1.2：PA0/PA1 默认是 SWDIO/SWCLK，不关就用不了串口），连不上时先给目标板**断电重上电**、趁复位瞬间抓；② 从机 PA2/PA3 被"一键下载"占用，烧写前先断开接目标板 RESET/BOOT 的线。
+
+> 要单步调试时，用 OpenOCD 起 GDB Server（端口 3333）+ 子模块里的 `tools/toolchain/bin/riscv-wch-elf-gdb`，详见 flashing.md 第四节。
 
 ### 发版（CI）
 
@@ -362,7 +364,7 @@ git tag -a v0.1.1 -m "..." && git push origin v0.1.1
 | 连上后约 1 秒断开 | `CONN_TIMEOUT`/`CONN_INTERVAL` 两端不匹配，或射频环境差导致连续丢包（从机重传 40 次后丢包） |
 | 波特率不对 / 乱码 | 电脑端串口工具的设置会下发到从机，检查目标设备实际线码是否一致；高速档（400k~1M）会切 100MHz 主频 |
 | 丢数据 | 三级缓冲任一满都会打印 `#ERR` 并丢包；从机 3KB 串口缓冲、RF/USB 各 512B，高波特率下要留意溢出 |
-| 下载失败 / WCH-Link 连不上 | 固件运行中关了两线调试，**断电重上电**后再下载 |
+| 下载失败 / WCH-Link 连不上 | 固件运行中关了仿真调试接口（PA0/PA1 让给串口），**断电重上电**后再下载 |
 | 内存不够 / 链接报错 | RAM 仅 12 KB（从机已用 92.6%）、Flash 可用 236 KB，按 `build/*.map` 精简 |
 | Release 里没有固件 | workflow 只在 `v*` tag 上触发，且 tag 必须指向**含 workflow 文件**的提交 |
 
@@ -380,7 +382,9 @@ git tag -a v0.1.1 -m "..." && git push origin v0.1.1
 | [protocol.md](./references/protocol.md) | **无线协议字节级详解**：帧结构与 `length` 语义、每个命令的字节布局、连接/透传时序、超时与重传规则、状态机、改协议检查清单 | 改协议、分析抓包、排查连不上 |
 | [wch-stdperiph-api.md](./references/wch-stdperiph-api.md) | 沁恒**标准外设库** API：CLK / GPIO / UART / Flash / SYS / TMR / PWM / SPI / I2C / PWR / USB设备 / USB主机 / CMP / KeyScan / ISP | 配引脚、设时钟、读写 Flash、开关中断 |
 | [rf-stack-api.md](./references/rf-stack-api.md) | 沁恒 **2.4G 协议栈**（`CH572rf.h`）+ **RISC-V 内核层**（`core_riscv.h`）：`RFRole_*` / `RFIP_*`、CSR 操作、`PFIC_*` 中断控制、`__MCPY` 等 xw 扩展、`__HIGH_CODE` | 调射频参数、写中断、理解 `.highcode` |
-| [resources.md](./references/resources.md) | 芯片手册、工具链、烧写调试工具、外部资料入口 | 查手册、找工具 |
+| [chip-spec.md](./references/chip-spec.md) | **CH570Q 芯片规格**：系列差异、内核/存储与地址映射、外设基址、CH570Q 引脚表、PA0/PA1 调试口约束、复位脚可选 PA7/PA8、电气与低功耗参数、2.4G 射频参数 | 查硬件规格、核对接线、调低功耗 |
+| [flashing.md](./references/flashing.md) | **烧录与调试指南**：OpenOCD 从哪来、各烧录模式、解除读保护、别擦掉绑定信息、GDB 调试、自带 OpenOCD 的编译坑与验证状态 | 烧写、排查烧录问题 |
+| [resources.md](./references/resources.md) | 数据手册、工具链、烧写调试工具、外部资料入口 | 查手册、找工具 |
 
 > **三层 API 的修改权限不同**：**APP 层**（本项目所写，可自由改）→ **协议栈 / 外设库**（沁恒预编译库与官方驱动，**只调用不修改**）→ **内核层**（`core_riscv.h`，RISC-V 抽象，只调用）。
 

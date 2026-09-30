@@ -39,6 +39,14 @@
 | 沁恒资料下载中心 | https://www.wch-ic.com/downloads |
 | 第三方资料汇总（原理图、例程、封装） | https://github.com/SoCXin/CH572 |
 
+**本地副本**（已在开发机上确认存在）：
+
+```
+D:\Users\Seahi\Desktop\项目文档\立创电赛\无线串口调试器\CH570Q无线串口调试器\CH570Q无线串口调试器\硬件相关的资料\CH572DS1 .PDF
+```
+
+> 已把与开发相关的部分（CH570Q 引脚表、存储与地址映射、外设基址、电气/低功耗参数、2.4G 射频参数、**PA0/PA1 被调试口占用**、复位脚可选 PA7/PA8）摘录成速查表 → [chip-spec.md](./chip-spec.md)，不必每次翻 123 页手册。
+
 > **CH570 与 CH572 是同一系列**（WCH BLE SoC），共用 `CH572DS1` 手册与同一套 SDK；本项目主控为 **CH570Q**。
 > 芯片 ID：`ID_CH570 = 0x70`、`ID_CH572 = 0x72`（见 `StdPeriphDriver/inc/CH572SFR.h`）。
 
