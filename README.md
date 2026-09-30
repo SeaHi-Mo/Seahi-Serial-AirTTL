@@ -89,6 +89,9 @@ RF_Cmake/
 ├── tools/toolchain/             # ★ git 子模块：沁恒定制的 riscv-wch-elf GCC 12.2.0（Linux x64）
 │   └── bin/riscv-wch-elf-gcc    # 唯一支持 xw 扩展（mcpy 等指令）的编译器
 │
+├── skills/                      # ★ AI Agent 技能：本项目的开发指南
+│   └── coder-ch570q-airttl/     #   SKILL.md——协议/架构/编译烧写/二次开发/排错
+│
 ├── .gitignore
 ├── LICENSE                      # MIT
 └── README.md
