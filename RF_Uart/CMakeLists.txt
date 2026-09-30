@@ -41,7 +41,10 @@ SET(CMAKE_CXX_COMPILER_WORKS TRUE)
 SET(CMAKE_ASM_COMPILER_WORKS TRUE)
 
 # Use MRS toolchian to compile
-set(TOOLCHAIN_FOLDER "e:/Soft/MounRiver_Studio2/resources/app/resources/win32/components/WCH/Toolchain/RISC-V Embedded GCC12")
+# 工具链根目录（MounRiver Studio 自带的 “RISC-V Embedded GCC12”，必须是沁恒定制版，-march 的 xw 扩展只有它支持）
+# 该变量是 CACHE 变量，可在配置阶段覆盖，Linux 下推荐这样用：
+#   cmake -B build -G "Unix Makefiles" -DTOOLCHAIN_FOLDER="$HOME/MounRiver_Studio2/resources/app/resources/linux/components/WCH/Toolchain/RISC-V Embedded GCC12"
+set(TOOLCHAIN_FOLDER "e:/Soft/MounRiver_Studio2/resources/app/resources/win32/components/WCH/Toolchain/RISC-V Embedded GCC12" CACHE PATH "MounRiver Studio RISC-V Embedded GCC12 工具链根目录")
 set(TOOLCHAIN_PREFIX "riscv-wch-elf-")
 set(CMAKE_C_COMPILER "${TOOLCHAIN_FOLDER}/bin/riscv-wch-elf-gcc")
 set(CMAKE_CXX_COMPILER "${TOOLCHAIN_FOLDER}/bin/riscv-wch-elf-g++")
