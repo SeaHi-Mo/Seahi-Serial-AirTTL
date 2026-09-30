@@ -86,6 +86,9 @@ RF_Cmake/
 │   ├── Ld/ · LIB/ · RVMSIS/ · Startup/ · StdPeriphDriver/   # 与从机同构
 │   └── RF_UartDongle.launch     # MounRiver Studio 调试配置
 │
+├── tools/toolchain/             # ★ git 子模块：沁恒定制的 riscv-wch-elf GCC 12.2.0（Linux x64）
+│   └── bin/riscv-wch-elf-gcc    # 唯一支持 xw 扩展（mcpy 等指令）的编译器
+│
 ├── .gitignore
 ├── LICENSE                      # MIT
 └── README.md
@@ -154,38 +157,43 @@ RF_Cmake/
 | 依赖 | 版本 / 说明 |
 |---|---|
 | 操作系统 | Linux x86_64（已在常见的 Ubuntu / Debian / Fedora 桌面发行版上验证思路） |
-| 工具链 | **MounRiver Studio 2 自带的 `RISC-V Embedded GCC12`**（前缀 `riscv-wch-elf-`）。`-march` 里的 `zba/zbb/zbc/zbs/xw` 扩展只有沁恒定制 GCC 支持，**不能换成发行版仓库里的 riscv64-unknown-elf-gcc** |
+| 工具链 | 仓库自带的 **`tools/toolchain`** git 子模块（沁恒定制的 `riscv-wch-elf-` GCC 12.2.0，Linux x64），**无需本机安装 MounRiver Studio**。`-march` 里的 `xw` 扩展（`mcpy` 等指令）只有沁恒定制 GCC 支持，**不能换成发行版或 xPack 的 riscv-none-elf-gcc** |
 | CMake | ≥ 3.16 |
 | 构建器 | GNU Make（`Unix Makefiles`），一般发行版自带 |
 | 烧写 | WCH-Link 调试器 + MounRiver Studio 或 OpenOCD |
 
-### 2. 拉取代码
+### 2. 拉取代码（含工具链子模块）
 
 ```bash
-git clone git@github.com:SeaHi-Mo/Seahi-Serial-AirTTL.git
+git clone --recurse-submodules git@github.com:SeaHi-Mo/Seahi-Serial-AirTTL.git
 cd Seahi-Serial-AirTTL
 ```
 
-（没有配置 SSH Key 的话用 HTTPS：`git clone https://github.com/SeaHi-Mo/Seahi-Serial-AirTTL.git`）
+（没有配置 SSH Key 的话用 HTTPS：`git clone --recurse-submodules https://github.com/SeaHi-Mo/Seahi-Serial-AirTTL.git`）
+
+已经克隆过、但没带子模块的，补一条：
+
+```bash
+git submodule update --init --recursive
+```
 
 ### 3. 准备工具链
 
-安装好 MounRiver Studio 2 的 Linux 版后，找到它自带的 GCC 目录，例如：
+**不用另装 MounRiver Studio**：工具链已作为 git 子模块放在 `tools/toolchain/`，验证一下：
 
 ```bash
-export MRS_TOOLCHAIN="$HOME/MounRiver_Studio2/resources/app/resources/linux/components/WCH/Toolchain/RISC-V Embedded GCC12"
-
-# 验证一下（应能打印版本号，并且带 wch 字样）
-"$MRS_TOOLCHAIN/bin/riscv-wch-elf-gcc" --version
+tools/toolchain/bin/riscv-wch-elf-gcc --version    # 应输出 12.2.0
 ```
 
-> 路径随 MounRiver Studio 版本/安装位置略有不同，**以实际安装目录为准**；只要该目录下有 `bin/riscv-wch-elf-gcc` 即可。
+> **为什么非它不可**：`-march` 里的 `xw` 是沁恒自有扩展，`RVMSIS/core_riscv.h` 的 `__MCPY()` 直接内联了 `mcpy` 指令。发行版仓库的 `riscv64-unknown-elf-gcc` 和 xPack 的 `riscv-none-elf-gcc` 都**不认识 `xw`**（会报 `unrecognized opcode 'mcpy'`，甚至触发 GCC ICE），必须用沁恒定制的这一套。
+>
+> 想改用 MounRiver Studio 2 自带的工具链也可以，配置时覆盖即可：`-DTOOLCHAIN_FOLDER="$HOME/MounRiver_Studio2/resources/app/resources/linux/components/WCH/Toolchain/RISC-V Embedded GCC12"`。
 
 ### 4. 编译从机
 
 ```bash
 cd RF_Uart
-cmake -B build -G "Unix Makefiles" -DTOOLCHAIN_FOLDER="$MRS_TOOLCHAIN"
+cmake -B build -G "Unix Makefiles"
 cmake --build build -j"$(nproc)"
 ```
 
@@ -193,9 +201,11 @@ cmake --build build -j"$(nproc)"
 
 ```bash
 cd ../RF_UartDongle
-cmake -B build -G "Unix Makefiles" -DTOOLCHAIN_FOLDER="$MRS_TOOLCHAIN"
+cmake -B build -G "Unix Makefiles"
 cmake --build build -j"$(nproc)"
 ```
+
+> `TOOLCHAIN_FOLDER` 默认已指向仓库内的 `tools/toolchain`，无需手动指定。
 
 ### 6. 编译产物
 
@@ -236,16 +246,17 @@ cmake --build build -j"$(nproc)"
 与 MRS 的下载流程等价（复位 → `load` → 运行），适合脚本化 / CI：
 
 ```bash
-export MRS_HOME="$HOME/MounRiver_Studio2"          # MounRiver Studio 安装根目录，按实际修改
-export MRS_TOOLCHAIN="$MRS_HOME/resources/app/resources/linux/components/WCH/Toolchain/RISC-V Embedded GCC12"
+export MRS_HOME="$HOME/MounRiver_Studio2"          # MounRiver Studio 安装根目录（OpenOCD 在里面），按实际修改
 export OPENOCD_BIN="$MRS_HOME/toolchain/OpenOCD/bin"
+# GDB 直接用仓库子模块里的，与编译用的是同一版工具链
+export WCH_GDB="$(pwd)/tools/toolchain/bin/riscv-wch-elf-gdb"
 
 # 1) 起 GDB Server（后台）
 "$OPENOCD_BIN/openocd" -f "$OPENOCD_BIN/wch-dual-core.cfg" &
 
 # 2) 用 GDB 把 ELF 写进 Flash 并复位运行
 cd RF_Uart
-"$MRS_TOOLCHAIN/bin/riscv-wch-elf-gdb" build/RF_Uart.elf \
+"$WCH_GDB" build/RF_Uart.elf \
   -ex "set architecture riscv:rv32" \
   -ex "set mem inaccessible-by-default off" \
   -ex "target extended-remote localhost:3333" \
@@ -308,11 +319,11 @@ screen /dev/ttyUSB0 115200
 | 串口打印 `reject.. rssi=-xx` | 首次配对距离太远，把主机与从机靠近后重新上电；或从机 Flash 里已有旧绑定信息，擦除后重试 |
 | 一直连不上 | 两个固件的无线参数是否一致（频点/PHY/接入地址常量）、是否同批固件；确认从机与主机都刷新过 |
 | 波特率不对 / 乱码 | 电脑端串口工具的设置会下发到从机，检查是否被上层工具改过；目标设备的实际线码要与之一致 |
-| 编译报找不到编译器 | `-DTOOLCHAIN_FOLDER` 是否指向含 `bin/riscv-wch-elf-gcc` 的目录；不要用发行版工具链 |
-| `-march` 报错 / 不识别 `xw` | 用错工具链了，必须用 MounRiver Studio 自带的沁恒定制 GCC12 |
+| 编译报找不到编译器 | 先确认子模块已拉取：`git submodule update --init --recursive`，`tools/toolchain/bin/riscv-wch-elf-gcc` 应存在；也可用 `-DTOOLCHAIN_FOLDER` 指向别的含 `bin/riscv-wch-elf-gcc` 的目录（别用发行版 / xPack 工具链） |
+| `-march` 报错 / `unrecognized opcode 'mcpy'` | 用错工具链了：必须用沁恒定制的 `riscv-wch-elf-` GCC（即 `tools/toolchain`）。xPack 的 `riscv-none-elf-gcc` 虽然接受 `-march=..._xw0p1` 这种写法，但**并不实现** `mcpy` 等 xw 指令 |
 | 内存不够 / 链接报错 | Flash 可用区仅 236 KB（末尾 4 KB 存绑定信息）、RAM 12 KB，按 `build/*.map` 精简代码 |
 | 下载失败、WCH-Link 连不上 | 固件运行中关闭了两线调试，给目标板断电重上电后再下载 |
-| Windows 下 CMake 配置报 `is not a full path to an existing compiler tool` | 脚本里工具链可执行文件没写 `.exe` 后缀，Windows 下 CMake 认不出来。本仓库的构建流程**只针对 Linux**，Windows 请在 WSL2 / 虚拟机里编译（若确实要在 Windows 原生编译，给 `CMakeLists.txt` 里那几个 `riscv-wch-elf-*` 补上 `.exe` 即可） |
+| Windows 下 CMake 配置报 `is not a full path to an existing compiler tool` | 本仓库的构建流程**只针对 Linux**，而且 `tools/toolchain` 子模块提供的是 **Linux x64** 工具链，Windows 请在 WSL2 / 虚拟机里编译 |
 
 ---
 
