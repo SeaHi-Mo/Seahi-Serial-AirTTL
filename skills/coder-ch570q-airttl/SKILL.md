@@ -92,11 +92,15 @@ description: SeaHi-Serial-AirTTL 项目开发指南——基于沁恒 CH570Q 的
 | 重传上限 `RESEND_COUNT` | 40（从机，超过则**丢包**） | `rf_uart_tx.h` |
 | 绑定信息 Flash 偏移 | `1024*236`（=0xF0000，4KB 扇区，`0x55AA`+`serverData`） | `rf_uart_tx.h` |
 
-> `rf.h` 里有多组 PHY 配置分支（`PHY_2G4_MODE` 0/1/2 与 `PHY_MODE_PHY_2M`），**`AA` 在不同分支下取值不同**（如 `0x94826E8E` 与 `0x57250425`）。改 PHY 时务必同步确认 `AA`、`CRC_INIT`、`CRC_POLY`，否则两端永远连不上。
+> **PHY 分支的坑（已读源码确认）**：`rf.h` 里有多组 PHY 配置分支（`PHY_2G4_MODE` 0/1/2 与 `PHY_MODE_PHY_2M`），**`AA` / `CRC_*` 在不同分支下取值不同**（`0x94826E8E` 与 `0x57250425` 两套）。当前 `TEST_PHY_MODE = PHY_MODE_PHY_2M`，走 `#else` 分支，所以 **`AA=0x57250425`、`CRC_INIT=0x555555`、`CRC_POLY=0x80032d` 才是实际生效的值**。
+>
+> 另一个更容易误判的点：`RFRole_Init()` 里那段 2.4G 位域赋值（`whitOff`/`lengthCrc`/`ctlFiled`/`lengthAA`/`lengthPreamble`/`dplEnable`/`mode2G4`/`bitOrderData`/`crcXOREnable`）被 `#if (TEST_PHY_MODE == PHY_MODE_2G4)` **整体编译屏蔽**，`Properties.cfgVal` 实际只等于 `TEST_PHY_MODE`（`0x10`）；即 `CRC_LEN`/`CTL_FILED`/`AA_LEN`/`PRE_LEN`/`DPL_EN`/`MODE_2G4` 这批宏**当前并未生效**。改 PHY 时不要只改这些宏，必须两端一起改并实测。
 
 ---
 
 ## 四、无线协议
+
+> 本节是**速览**；帧的字节级布局、连接/透传时序、超时与重传、状态机见 **[references/protocol.md](./references/protocol.md)**。
 
 ### 包格式（4 字节头，小端）
 
@@ -364,12 +368,28 @@ git tag -a v0.1.1 -m "..." && git push origin v0.1.1
 
 ---
 
-## 十、相关资源
+## 十、API 参考与资源
+
+### 10.1 API 参考（`references/`）
+
+**动手改代码前先查这几份文档**——它们是本 skill 的"接口说明书"：
+
+| 文档 | 内容 | 何时看 |
+|---|---|---|
+| [app-api.md](./references/app-api.md) | **本项目 APP 层 API**：`rf.h` 收发接口与数据结构、`buf.h` 环形缓冲、从机 `uart.h`、从机 `rf_uart_tx.h`、主机 `rf_uart_rx.h`、主机 `usb_uart.h`、`log.h`，附全局状态变量速查 | 改业务逻辑、加功能、调缓冲 |
+| [protocol.md](./references/protocol.md) | **无线协议字节级详解**：帧结构与 `length` 语义、每个命令的字节布局、连接/透传时序、超时与重传规则、状态机、改协议检查清单 | 改协议、分析抓包、排查连不上 |
+| [wch-stdperiph-api.md](./references/wch-stdperiph-api.md) | 沁恒**标准外设库** API：CLK / GPIO / UART / Flash / SYS / TMR / PWM / SPI / I2C / PWR / USB设备 / USB主机 / CMP / KeyScan / ISP | 配引脚、设时钟、读写 Flash、开关中断 |
+| [rf-stack-api.md](./references/rf-stack-api.md) | 沁恒 **2.4G 协议栈**（`CH572rf.h`）+ **RISC-V 内核层**（`core_riscv.h`）：`RFRole_*` / `RFIP_*`、CSR 操作、`PFIC_*` 中断控制、`__MCPY` 等 xw 扩展、`__HIGH_CODE` | 调射频参数、写中断、理解 `.highcode` |
+| [resources.md](./references/resources.md) | 芯片手册、工具链、烧写调试工具、外部资料入口 | 查手册、找工具 |
+
+> **三层 API 的修改权限不同**：**APP 层**（本项目所写，可自由改）→ **协议栈 / 外设库**（沁恒预编译库与官方驱动，**只调用不修改**）→ **内核层**（`core_riscv.h`，RISC-V 抽象，只调用）。
+
+### 10.2 其他资源
 
 | 资源 | 位置 |
 |---|---|
 | 项目 README（接线/使用/烧写全流程） | 仓库根 `README.md` |
-| 无线包格式与命令表 | 本文第四节 + `APP/include/rf.h` |
+| 无线包格式速览 | 本文第四节（字节级详解见 `references/protocol.md`） |
 | 沁恒 CH570Q 资料 | https://www.wch.cn/products/CH572.html |
 | 工具链子模块 | `tools/toolchain`（`SeaHi-Mo/riscv-gun-toolchain-...`，GCC 12.2.0） |
 | 发版工作流 | `.github/workflows/release.yml` |
