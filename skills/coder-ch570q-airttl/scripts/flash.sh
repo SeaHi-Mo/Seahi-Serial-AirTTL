@@ -92,6 +92,12 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# 模式合法性先校验，免得先打印了一堆摘要才报错
+case "$MODE" in
+    verify|erase-program|unlock-program|verify-only|erase-all|reset) ;;
+    *) echo "❌ 未知模式: $MODE" >&2; usage >&2; exit 2 ;;
+esac
+
 # ---------- 查找 OpenOCD 配置 ----------
 if [ -z "$CFG" ]; then
     for c in \
@@ -128,9 +134,9 @@ elif ! supports_wlinke "$OPENOCD_BIN"; then
     echo "    （若它确是 WCH 定制版，可忽略此提示继续）" >&2
 fi
 
-# ---------- 固件检查（reset 模式除外） ----------
+# ---------- 固件检查（reset / erase-all 模式不需要固件） ----------
 NEED_FW=1
-[ "$MODE" = "reset" ] && NEED_FW=0
+case "$MODE" in reset|erase-all) NEED_FW=0 ;; esac
 if [ "$NEED_FW" = "1" ]; then
     if [ -z "$FIRMWARE" ]; then
         echo "❌ 请指定固件文件（.hex）" >&2; usage >&2; exit 2
