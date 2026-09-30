@@ -15,6 +15,9 @@ FIRMWARE=""
 # ---------- 挑选一份「支持 wlinke」的 OpenOCD ----------
 # 发行版仓库里的 openocd（如 0.10.0）没有 wlinke 驱动，装了也连不上 WCH-Link，
 # 所以不能只看命令是否存在，必须逐个校验驱动。
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+PROJECT_OPENOCD="$REPO_ROOT/tools/openocd/bin/openocd"
+
 supports_wlinke() {
     local bin="$1" out
     [ -n "$bin" ] || return 1
@@ -30,11 +33,14 @@ supports_wlinke() {
 }
 
 if [ -z "${OPENOCD_BIN:-}" ]; then
-    # ① PATH 里的 openocd（但要确认它真的带 wlinke）
-    if command -v openocd >/dev/null 2>&1 && supports_wlinke "$(command -v openocd)"; then
+    # ① 项目自带（tools/openocd 子模块，clone 即用，最可复现）
+    if supports_wlinke "$PROJECT_OPENOCD"; then
+        OPENOCD_BIN="$PROJECT_OPENOCD"
+    # ② PATH 里的 openocd（但要确认它真的带 wlinke）
+    elif command -v openocd >/dev/null 2>&1 && supports_wlinke "$(command -v openocd)"; then
         OPENOCD_BIN="$(command -v openocd)"
     else
-        # ② 系统已装的 WCH 定制版 ③ FlashKey 随 flashkey-mcp 分发的 Linux 版 ④ MRS 自带
+        # ③ 系统已装的 WCH 定制版 ④ FlashKey 随 flashkey-mcp 分发的 Linux 版 ⑤ MRS 自带
         for cand in \
             /usr/local/bin/openocd \
             "$HOME"/.local/venvs/flashkey-mcp/lib/python*/site-packages/flashkey_mcp/openocd/bin/linux-x64/openocd \
@@ -89,6 +95,7 @@ done
 # ---------- 查找 OpenOCD 配置 ----------
 if [ -z "$CFG" ]; then
     for c in \
+        "$REPO_ROOT/tools/openocd/tcl/target/wch-riscv.cfg" \
         /usr/local/share/openocd/scripts/target/wch-riscv.cfg \
         /usr/share/openocd/scripts/target/wch-riscv.cfg \
         "$HOME/MounRiver_Studio2/toolchain/OpenOCD/bin/wch-riscv.cfg" \
@@ -111,6 +118,7 @@ if [ -z "${OPENOCD_BIN:-}" ]; then
     echo "❌ 没找到可用的 WCH 定制版 OpenOCD（必须含 wlinke 驱动）" >&2
     echo "   注意：发行版仓库自带的 openocd【没有】wlinke 驱动，装了也连不上 WCH-Link。" >&2
     echo "   可用来源（任选其一，或用环境变量 OPENOCD_BIN 显式指定）：" >&2
+    echo "     · 项目自带（推荐）：git submodule update --init tools/openocd" >&2
     echo "     · 系统已装：/usr/local/bin/openocd" >&2
     echo "     · MounRiver Studio 自带：\$MRS_HOME/toolchain/OpenOCD/bin/openocd" >&2
     echo "     · 安信可 FlashKey 分发的 Linux 版（随 flashkey-mcp 包）" >&2

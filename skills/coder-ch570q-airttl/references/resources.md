@@ -69,7 +69,8 @@ D:\Users\Seahi\Desktop\项目文档\立创电赛\无线串口调试器\CH570Q无
 |---|---|
 | **WCH-Link** | 两线调试器，烧写两颗 CH570Q 必需 |
 | WCH-LinkUtility / WCHISPTool | 沁恒官方 Windows 烧写工具（官网下载中心） |
-| OpenOCD（WCH 版） | 命令行烧写，配置见 `README.md` 第六节；GDB 端口 3333 |
+| **OpenOCD（WCH 定制版）** | 项目自带子模块 `tools/openocd`（Linux x64，含 `wlinke` 驱动 + `wch-riscv.cfg`），clone 即用；独立仓库：https://github.com/SeaHi-Mo/wch-openocd-linux-x64 |
+| 烧录脚本 | `skills/coder-ch570q-airttl/scripts/flash.sh` —— 自动挑选可用的 openocd 与 `wch-riscv.cfg`，支持烧录/校验/解锁/擦除/复位 |
 | 仓库内 GDB | `tools/toolchain/bin/riscv-wch-elf-gdb` |
 
 > **从机固件运行时会关闭两线调试**（`R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN`，为复用 PA2/PA3 给串口/一键下载）。下载失败先给板子**断电重上电**。

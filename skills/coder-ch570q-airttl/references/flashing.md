@@ -56,21 +56,32 @@ R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN;
 
 必须是**含 `wlinke` 驱动的 WCH 定制版 OpenOCD** —— 发行版仓库里的 `openocd` **没有这个驱动**，装了也用不了。
 
-**这是"用现成工具"，不需要自己编译。** 现成来源有三处，任选其一：
+**这是"用现成工具"，不需要自己编译。** 本项目**自带一份**（`tools/openocd` 子模块），`scripts/flash.sh` 会按下面的优先级自动挑选：
 
-| 来源 | 路径 / 获取方式 |
-|---|---|
-| **① 系统已装的**（首选） | 本机即如此：`/usr/local/bin/openocd`（`0.11.0+dev-g2b6802d`），配套 `wch-riscv.cfg` 在 `/usr/local/share/openocd/scripts/target/` |
-| **② MounRiver Studio 自带的** | `$MRS_HOME/toolchain/OpenOCD/bin/openocd` —— MRS 内部烧录用的就是它 |
-| **③ 安信可 FlashKey 编译的 Linux 版** | FlashKey 已编译好 Linux x64 并随其 `flashkey-mcp` 包分发，本机路径示例：`~/.local/venvs/flashkey-mcp/lib/python3.11/site-packages/flashkey_mcp/openocd/bin/linux-x64/openocd`。`scripts/flash.sh` 会自动探测该位置 |
+| 优先级 | 来源 | 路径 |
+|---|---|---|
+| **①（推荐）** | **项目自带子模块** | `tools/openocd/bin/openocd` |
+| ② | PATH 里的 `openocd` | 会**校验它是否真带 `wlinke`**，发行版自带的（0.10）不合格会被自动跳过 |
+| ③ | 系统已装的 WCH 定制版 | `/usr/local/bin/openocd`（本机即如此） |
+| ④ | 安信可 FlashKey 编译的 Linux 版 | 随其 `flashkey-mcp` 包分发，本机示例：`~/.local/venvs/flashkey-mcp/lib/python3.11/site-packages/flashkey_mcp/openocd/bin/linux-x64/openocd` |
+| ⑤ | MounRiver Studio 自带的 | `$MRS_HOME/toolchain/OpenOCD/bin/openocd` |
 
-> **这份 Linux 版的来历（已核实）**：FlashKey 用子模块 `openwch/openocd_wch`（WCH OpenOCD v1.6 / OpenOCD 0.11.0 分支，含 `wlinke` 驱动）自行编译，并在其 `NOTICE-OPENOCD.md` 中声明。**本机 `/usr/local/bin/openocd` 与 FlashKey 打包的那份 MD5 完全相同**（`b7e652aa…`）——你现在用的烧录器就是它。
+项目自带那份的获取方式：
+
+```bash
+git clone --recurse-submodules <本仓库>
+# 已克隆过的补拉：
+git submodule update --init tools/openocd
+```
+
+> **这份 Linux 版的来历（已核实）**：由安信可 **FlashKey** 项目编译（WCH OpenOCD v1.6 / OpenOCD 0.11.0 分支，含 `wlinke` 驱动与 SDI 传输），现独立托管于
+> [`SeaHi-Mo/wch-openocd-linux-x64`](https://github.com/SeaHi-Mo/wch-openocd-linux-x64)，并附 `NOTICE-OPENOCD.md` 做 GPL-2.0 合规声明。
+> **本机 `/usr/local/bin/openocd` 与它 MD5 完全相同**（`b7e652aa…`）—— 你现在用的烧录器就是它。
 >
-> ⚠️ **但没有公开的"Linux 二进制仓库"可直接当依赖**：沁恒 `openwch/openocd_wch`、`cjacker/wch-openocd`、`fxsheep/openocd_wchlink-rv` **都只有源码**（`bin/` 里只有 Windows `openocd.exe`）；FlashKey 那份放在**私有**子模块 `Ai-Thinker-Open/FlashKey_MCP-Server` 中、也未发布到 PyPI。**想"clone 即用"只能自建仓库**，否则按 ①/② 用已装好的即可。
->
-> 万一三处都没有（干净机器）：取 [cjacker/wch-openocd](https://github.com/cjacker/wch-openocd) 源码编一份（`./bootstrap && ./configure --enable-wlinke && make`）。这属于**一次性装工具**，与烧录流程本身无关。
+> 沁恒与社区的同类仓库（`openwch/openocd_wch`、`cjacker/wch-openocd`、`fxsheep/openocd_wchlink-rv`）**都只有源码**、无 Linux 预编译包，
+> 所以本项目把构建产物单独托管，才能做到"clone 即用"。
 
-**怎么判断能不能用**：`openocd --version` 是 WCH 定制版，且能加载 `wch-riscv.cfg` 而**不报** `unknown adapter`。
+**怎么判断能不能用**：能加载 `wch-riscv.cfg` 而**不报** `unknown adapter`（即已编入 `wlinke` 驱动）。`scripts/flash.sh` 会自动做这个校验。
 
 target 配置内容就是：
 
