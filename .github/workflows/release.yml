@@ -1,0 +1,119 @@
+name: release
+
+# 打了 v* 的 tag 之后自动触发：
+#   编译 RF_Uart / RF_UartDongle 两个固件
+#   → 产出 <固件名>_<版本号>.hex
+#   → 创建（或更新）对应版本的 Release，并自动成为 Latest
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的版本 tag（如 v0.1.1）'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 构建固件并发布 Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout（含工具链子模块）
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          submodules: recursive
+
+      - name: 解析版本号
+        id: ver
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "版本号: ${TAG}"
+
+      - name: 校验工具链
+        run: tools/toolchain/bin/riscv-wch-elf-gcc --version
+
+      - name: 编译从机 RF_Uart
+        run: |
+          set -euo pipefail
+          cmake -B RF_Uart/build -S RF_Uart -G "Unix Makefiles"
+          cmake --build RF_Uart/build -j"$(nproc)" 2>&1 | tee RF_Uart_build.log
+
+      - name: 编译主机 RF_UartDongle
+        run: |
+          set -euo pipefail
+          cmake -B RF_UartDongle/build -S RF_UartDongle -G "Unix Makefiles"
+          cmake --build RF_UartDongle/build -j"$(nproc)" 2>&1 | tee RF_UartDongle_build.log
+
+      - name: 收集固件（<固件名>_<版本号>.hex）
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp RF_Uart/build/RF_Uart.hex             "dist/RF_Uart_${TAG}.hex"
+          cp RF_UartDongle/build/RF_UartDongle.hex "dist/RF_UartDongle_${TAG}.hex"
+          ls -l dist/
+
+      - name: 生成发布说明
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## 固件"
+            echo ""
+            echo "| 文件 | 角色 | 烧写目标 |"
+            echo "| --- | --- | --- |"
+            echo "| \`RF_Uart_${TAG}.hex\` | 从机（接被调试设备） | CH572 从机板 |"
+            echo "| \`RF_UartDongle_${TAG}.hex\` | 主机（插电脑 USB） | CH572 Dongle |"
+            echo ""
+            echo "## 资源占用"
+            echo ""
+            echo '```'
+            echo "# RF_Uart（从机）"
+            sed -n '/Memory region/,/RAM:/p' RF_Uart_build.log | head -3
+            echo ""
+            echo "# RF_UartDongle（主机）"
+            sed -n '/Memory region/,/RAM:/p' RF_UartDongle_build.log | head -3
+            echo '```'
+            echo ""
+            echo "## 烧写"
+            echo ""
+            echo "两颗芯片都是 **CH572**，用 WCH-Link 通过两线调试口烧写。**两个固件都要烧，别烧错**：主机烧 \`RF_UartDongle_*\`，从机烧 \`RF_Uart_*\`。"
+            echo ""
+            echo "- 从机固件运行时会关闭两线调试功能（腾出引脚给串口），下载失败时先给板子断电重上电；"
+            echo "- 接线、配对与上位机使用说明见 [README](https://github.com/${REPO}/blob/${TAG}/README.md)。"
+            echo ""
+            echo "## 本次提交"
+            echo ""
+            echo "https://github.com/${REPO}/commit/${SHA}"
+          } > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，更新产物与说明"
+            gh release upload "$TAG" dist/*.hex --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit   "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file RELEASE_NOTES.md
+          else
+            echo "创建 Release $TAG"
+            gh release create "$TAG" dist/*.hex --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file RELEASE_NOTES.md
+          fi
