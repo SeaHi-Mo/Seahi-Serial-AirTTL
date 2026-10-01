@@ -37,6 +37,7 @@ void RF_StatusQuery( void );
 void LedTimerInit( void );
 void LedTimerCalibBegin( void );
 void LedTimerCalibEnd( void );
+uint32_t LedMsToTicks( uint32_t ms );
 
 
 #ifdef __cplusplus

@@ -423,6 +423,32 @@ static uint32_t gLedPulseTicks = 0;             /* 数据提示脉冲宽度（计数） */
 static volatile uint32_t gLedDataTick  = 0;     /* 最近一次数据活动的时刻 */
 static volatile uint8_t  gLedDataActive = 0;    /* 是否有数据活动待显示 */
 
+uint32_t gLedTicksPerMs = 0;                    /* 每毫秒的 SysTick 计数（启动标定） */
+
+/* 去抖后的连接状态：连上立即置 1；断开要持续 LINK_DEBOUNCE_MS 才清 0。
+ * USB 枚举与 LED 都以它为准，避免信号临界时反复抖动 */
+volatile uint8_t  gLinkStable     = 0;
+static   uint8_t  gLinkDownActive = 0;
+static   uint32_t gLinkDownTick   = 0;
+
+/*******************************************************************************
+ * @fn      LedMsToTicks
+ *
+ * @brief   毫秒 -> SysTick 计数（用启动标定出的 gLedTicksPerMs）
+ *
+ * @param   ms  毫秒数
+ *
+ * @return  对应的 SysTick 计数
+ */
+uint32_t LedMsToTicks( uint32_t ms )
+{
+    if( gLedTicksPerMs == 0 )
+    {
+        return ms;          /* 尚未标定（正常不会走到，标定在 process_main 之前完成） */
+    }
+    return gLedTicksPerMs * ms;
+}
+
 /*******************************************************************************
  * @fn      LedTimerInit
  *
@@ -462,6 +488,7 @@ void LedTimerInit( void )
         {
             ticks_per_ms = 1;
         }
+        gLedTicksPerMs = ticks_per_ms;
         gLedHalfTicks  = ticks_per_ms * LED_BLINK_MS;
         gLedPulseTicks = ticks_per_ms * LED_DATA_PULSE_MS;
     }
@@ -498,11 +525,33 @@ void LedDataPulse( void )
  */
 void LedStatusQuery( void )
 {
-#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
     uint32_t now = SysTick->CNT;
+
+    /* ---- 连接状态去抖（与 LED_FUNC 无关：USB 枚举也依赖 gLinkStable） ---- */
+    if( RF_bound_Flag )
+    {
+        gLinkStable     = 1;
+        gLinkDownActive = 0;
+    }
+    else if( gLinkStable )
+    {
+        if( gLinkDownActive == 0 )
+        {
+            gLinkDownActive = 1;
+            gLinkDownTick   = now;
+        }
+        else if( (uint32_t)( now - gLinkDownTick ) >= LedMsToTicks( LINK_DEBOUNCE_MS ) )
+        {
+            gLinkStable     = 0;
+            gLinkDownActive = 0;
+        }
+    }
+
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+    {
     uint8_t  lit = 0;
 
-    if(RF_bound_Flag)
+    if( gLinkStable )
     {
 #if(LED_DATA_BLINK == 1)
         if( gLedDataActive )
@@ -528,6 +577,7 @@ void LedStatusQuery( void )
     {
         GPIOA_InverseBits(LED_PIN);
         ledcount = now;
+    }
     }
 #endif
 }

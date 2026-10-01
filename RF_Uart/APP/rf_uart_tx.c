@@ -374,6 +374,29 @@ static uint32_t gLedCalClock   = 0;
 static volatile uint32_t gLedDataTick  = 0;     /* 最近一次数据活动的时刻 */
 static volatile uint8_t  gLedDataActive = 0;    /* 是否有数据活动待显示 */
 
+uint32_t gLedTicksPerMs = 0;                    /* 每毫秒的 SysTick 计数（标定） */
+
+/* 去抖后的连接状态：连上立即置 1；断开要持续 LINK_DEBOUNCE_MS 才清 0 */
+volatile uint8_t  gLinkStable     = 0;
+static   uint8_t  gLinkDownActive = 0;
+static   uint32_t gLinkDownTick   = 0;
+
+/*******************************************************************************
+ * @fn      LedMsToTicks
+ *
+ * @brief   毫秒 -> SysTick 计数（用标定出的 gLedTicksPerMs）
+ *
+ * @return  对应的 SysTick 计数
+ */
+uint32_t LedMsToTicks( uint32_t ms )
+{
+    if( gLedTicksPerMs == 0 )
+    {
+        return ms;
+    }
+    return gLedTicksPerMs * ms;
+}
+
 static uint32_t gLedCalT0 = 0;
 
 /*******************************************************************************
@@ -419,6 +442,7 @@ void LedTimerCalibEnd( void )
         {
             ticks_per_ms = 1;
         }
+        gLedTicksPerMs = ticks_per_ms;
         gLedHalfTicks  = ticks_per_ms * LED_BLINK_MS;
         gLedPulseTicks = ticks_per_ms * LED_DATA_PULSE_MS;
     }
@@ -478,6 +502,30 @@ void RF_StatusQuery( void )
 {
     uint8_t s;
 
+    /* ---- 连接状态去抖 ---- */
+    {
+        uint32_t now = SysTick->CNT;
+
+        if( RF_bound_Flag )
+        {
+            gLinkStable     = 1;
+            gLinkDownActive = 0;
+        }
+        else if( gLinkStable )
+        {
+            if( gLinkDownActive == 0 )
+            {
+                gLinkDownActive = 1;
+                gLinkDownTick   = now;
+            }
+            else if( (uint32_t)( now - gLinkDownTick ) >= LedMsToTicks( LINK_DEBOUNCE_MS ) )
+            {
+                gLinkStable     = 0;
+                gLinkDownActive = 0;
+            }
+        }
+    }
+
 #if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
     /* LED 指示：未连接 → 快闪（周期 = LED_BLINK_MS*2 ms）；
      * 连接成功 → 熄灭，但收发数据时亮 LED_DATA_PULSE_MS 毫秒。
@@ -486,7 +534,7 @@ void RF_StatusQuery( void )
         uint32_t now = SysTick->CNT;
         uint8_t  lit = 0;
 
-        if(RF_bound_Flag)
+        if( gLinkStable )
         {
 #if(LED_DATA_BLINK == 1)
             if( gLedDataActive )

@@ -32,10 +32,11 @@ void process_main( void )
         /* LED 独立于 USB：未连接从机 → 快闪；连接成功 → 熄灭 */
         LedStatusQuery( );
 
-        if( RF_bound_Flag )
+        /* gLinkStable 是去抖后的连接状态（由上面的 LedStatusQuery 更新）：
+         * 连上立即生效；断开要持续 LINK_DEBOUNCE_MS 才认定。
+         * 这样信号在临界值时不会让 USB 反复枚举（PC 上设备反复插拔）。 */
+        if( gLinkStable )
         {
-            /* 与从机连接成功后才启动 USB 枚举，
-             * 免得电脑上先冒出一个还没配上对的空串口 */
             if( gUsbInited == 0 )
             {
                 gUsbInited = 1;
@@ -44,8 +45,6 @@ void process_main( void )
         }
         else
         {
-            /* 从机断开 → 收回串口（主机侧看到"设备已拔出"），
-             * 回到"未连接"状态，等待从机重新广播、自动重连 */
             if( gUsbInited )
             {
                 gUsbInited = 0;

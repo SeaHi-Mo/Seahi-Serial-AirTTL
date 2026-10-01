@@ -45,6 +45,10 @@ extern "C"
 #define    LED_DATA_BLINK    1
 #define    LED_DATA_PULSE_MS 30
 
+/* 连接状态去抖时间（毫秒）：连上立即生效；断开要持续这么久才认定断开。
+ * 用来抑制信号临界值时的抖动 —— 否则 USB 会反复枚举（PC 上设备反复插拔）。 */
+#define    LINK_DEBOUNCE_MS  3000
+
 
 
 

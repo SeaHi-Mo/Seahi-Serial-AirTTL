@@ -29,6 +29,9 @@ uint8_t RF_RxQuery( void *buf, typeBufSize *len );
 void LedStatusQuery( void );
 void LedTimerInit( void );
 void LedDataPulse( void );
+uint32_t LedMsToTicks( uint32_t ms );
+
+extern volatile uint8_t gLinkStable;
 
 extern uint8_t volatile RF_bound_Flag;
 
