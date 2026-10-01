@@ -36,7 +36,8 @@ rfPackage_t *pPkt_t;
 static void rfProcessRx( rfPackage_t *pPkt );
 static void rfProcessTx( void );
 static void rfProcessTimeout( void );
-void LedTimerRescale( void );
+void LedTimerCalibBegin( void );
+void LedTimerCalibEnd( void );
 
 // tf status callbacks
 rfStatusCBs_t rfCBs =
@@ -195,8 +196,9 @@ static void rfProcessRx( rfPackage_t *pPkt )
                 {
                     SetSysClock(CLK_SOURCE_HSE_PLL_24MHz);
                 }
+                LedTimerCalibBegin( );              /* 顺便用这次延时重新标定 LED 时基 */
                 mDelaymS(10);
-                LedTimerRescale( );                 /* 主频变了，LED 时基按比例补偿 */
+                LedTimerCalibEnd( );                /* 主频变了必须实测重标，不能按比例推算 */
 
                 UART_SetBuad( pRsp_t->buad_t.BaudRate );
                 // 停止位
@@ -286,8 +288,8 @@ static void rfProcessRx( rfPackage_t *pPkt )
                         PFIC_SetPendingIRQ( UART_IRQn );
                     }
                 }
-#if(defined(LED_FUNC)) && (LED_FUNC == TRUE) && (LED_DATA_BLINK == 1)
-            GPIOA_InverseBits(LED_PIN);
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+            LedDataPulse( );        /* 有数据收发 → LED 亮一下 */
 #endif
 
             }
@@ -366,63 +368,100 @@ static  void rfProcessTimeout( void )
 
 
 /* LED 时基：SysTick 自由计数 + 启动标定，使闪烁周期是真实时间 */
-static uint32_t gLedHalfTicks = 0;
-static uint32_t gLedCalClock  = 0;
+static uint32_t gLedHalfTicks  = 0;
+static uint32_t gLedPulseTicks = 0;             /* 数据提示脉冲宽度（计数） */
+static uint32_t gLedCalClock   = 0;
+static volatile uint32_t gLedDataTick  = 0;     /* 最近一次数据活动的时刻 */
+static volatile uint8_t  gLedDataActive = 0;    /* 是否有数据活动待显示 */
+
+static uint32_t gLedCalT0 = 0;
+
+/*******************************************************************************
+ * @fn      LedTimerCalibBegin
+ *
+ * @brief   记录标定起点（SysTick 计数），随后必须紧跟一段已知延时，
+ *          再由 LedTimerCalibEnd() 完成标定。
+ *
+ * @return  None.
+ */
+void LedTimerCalibBegin( void )
+{
+    gLedCalT0 = SysTick->CNT;
+}
+
+/*******************************************************************************
+ * @fn      LedTimerCalibEnd
+ *
+ * @brief   完成 LED 时基标定。Δt 是一段 mDelaymS(10) 期间 SysTick 走过的计数。
+ *          【必须实测，不能按主频比例推算】：SysTick 的计数频率是否随
+ *          SetSysClock() 变化并无保证，实测才可靠。
+ *
+ * @return  None.
+ */
+void LedTimerCalibEnd( void )
+{
+    uint32_t t1     = SysTick->CNT;
+    uint32_t sysclk = GetSysClock( );
+
+    if( sysclk == 0 )
+    {
+        sysclk = FREQ_SYS;
+    }
+
+    /* mDelaymS() 的软件循环次数是按编译期 FREQ_SYS 算的【固定值】，主频越低，
+     * 同样的循环越慢：真实时长 = 10ms × FREQ_SYS / sysclk。
+     * 于是每毫秒的 SysTick 计数 = ticks / 真实时长，
+     * 故"LED_BLINK_MS 毫秒的计数" = ticks × sysclk × LED_BLINK_MS / (10 × FREQ_SYS)。 */
+    {
+        uint32_t ticks_per_ms = (uint32_t)( (uint64_t)( t1 - gLedCalT0 ) * sysclk
+                                            / ( 10ULL * FREQ_SYS ) );
+        if( ticks_per_ms == 0 )
+        {
+            ticks_per_ms = 1;
+        }
+        gLedHalfTicks  = ticks_per_ms * LED_BLINK_MS;
+        gLedPulseTicks = ticks_per_ms * LED_DATA_PULSE_MS;
+    }
+    if( gLedHalfTicks == 0 )
+    {
+        gLedHalfTicks = 1;
+    }
+    gLedCalClock = sysclk;
+}
+
+/*******************************************************************************
+ * @fn      LedDataPulse
+ *
+ * @brief   标记"刚有数据收发"，让 LED 亮 LED_DATA_PULSE_MS 毫秒（可见的闪一下）。
+ *          在中断里调用也安全。
+ *
+ * @return  None.
+ */
+void LedDataPulse( void )
+{
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE) && (LED_DATA_BLINK == 1)
+    gLedDataTick   = SysTick->CNT;
+    gLedDataActive = 1;
+#endif
+}
 
 /*******************************************************************************
  * @fn      LedTimerInit
  *
- * @brief   初始化 LED 时基：SysTick 自由计数（不使能中断），并用 mDelaymS(10)
- *          标定出 LED_BLINK_MS 毫秒对应的计数值。
+ * @brief   初始化 LED 时基：SysTick 自由计数（不使能中断），并标定一次。
  *
  * @return  None.
  */
 void LedTimerInit( void )
 {
-    uint32_t t0, t1;
-
     SysTick->CNTL = 0;
     SysTick->CMP  = 0xFFFFFFFF;                 /* 最大重载值，不使能中断 */
     SysTick->SR   = 0;
     SysTick->CTLR = SysTick_CTLR_STRE | SysTick_CTLR_STCLK | SysTick_CTLR_STE;
 
-    t0 = SysTick->CNT;
+    LedTimerCalibBegin( );
     mDelaymS( 10 );                             /* 软件延时 10ms 作参考 */
-    t1 = SysTick->CNT;
-
-    /* 注意：本工程 FREQ_SYS 编译期是 100MHz，而从机启动跑 24MHz，
-     * mDelaymS() 的软件循环是按 FREQ_SYS 算的，所以这 10ms 的真实时长
-     * = 10ms × sysclk / FREQ_SYS。按此比例修正，否则闪烁会偏快约 4 倍。 */
-    gLedCalClock = GetSysClock( );
-    if( gLedCalClock == 0 )
-    {
-        gLedCalClock = FREQ_SYS;
-    }
-    gLedHalfTicks = (uint32_t)( (uint64_t)( t1 - t0 ) * FREQ_SYS * LED_BLINK_MS
-                                / ( 10ULL * gLedCalClock ) );
-    if( gLedHalfTicks == 0 )
-    {
-        gLedHalfTicks = 1;
-    }
-}
-
-/*******************************************************************************
- * @fn      LedTimerRescale
- *
- * @brief   从机会在 24MHz/100MHz 之间切主频，SysTick 计数频率随之变化，
- *          这里按"当前主频 / 标定时主频"的比例修正 LED 翻转间隔。
- *
- * @return  None.
- */
-void LedTimerRescale( void )
-{
-    uint32_t cur = GetSysClock( );
-
-    if( ( cur != 0 ) && ( gLedCalClock != 0 ) && ( cur != gLedCalClock ) )
-    {
-        gLedHalfTicks = (uint32_t)( (uint64_t)gLedHalfTicks * cur / gLedCalClock );
-        gLedCalClock  = cur;
-    }
+    LedTimerCalibEnd( );
 }
 
 /*******************************************************************************
@@ -440,20 +479,39 @@ void RF_StatusQuery( void )
     uint8_t s;
 
 #if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
-    /* LED 指示：未连接 → 快闪（周期 = LED_BLINK_MS*2 ms）；连接成功 → 熄灭。
+    /* LED 指示：未连接 → 快闪（周期 = LED_BLINK_MS*2 ms）；
+     * 连接成功 → 熄灭，但收发数据时亮 LED_DATA_PULSE_MS 毫秒。
      * ledcount 当"上次翻转时的 SysTick 计数"用，与主循环速度无关。 */
-    if(RF_bound_Flag)
-    {
-        GPIOA_ResetBits(LED_PIN);
-        ledcount = 0;
-    }
-    else
     {
         uint32_t now = SysTick->CNT;
-        if( (uint32_t)( now - ledcount ) >= gLedHalfTicks )
+        uint8_t  lit = 0;
+
+        if(RF_bound_Flag)
         {
-            GPIOA_InverseBits(LED_PIN);
-            ledcount = now;
+#if(LED_DATA_BLINK == 1)
+            if( gLedDataActive )
+            {
+                if( (uint32_t)( now - gLedDataTick ) < gLedPulseTicks )
+                {
+                    lit = 1;
+                }
+                else
+                {
+                    gLedDataActive = 0;
+                }
+            }
+#endif
+            if( lit )   GPIOA_SetBits(LED_PIN);        /* 数据活动 → 亮一下 */
+            else        GPIOA_ResetBits(LED_PIN);      /* 平时熄灭 */
+            ledcount = 0;
+        }
+        else
+        {
+            if( (uint32_t)( now - ledcount ) >= gLedHalfTicks )
+            {
+                GPIOA_InverseBits(LED_PIN);
+                ledcount = now;
+            }
         }
     }
 #endif
@@ -466,8 +524,8 @@ void RF_StatusQuery( void )
         // 发送数据
         if( s == 0 )
         {
-#if(defined(LED_FUNC)) && (LED_FUNC == TRUE) && (LED_DATA_BLINK == 1)
-            GPIOA_InverseBits(LED_PIN);
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+            LedDataPulse( );        /* 有数据收发 → LED 亮一下 */
 #endif
 
             gRfStatus = RF_STATUS_TX;

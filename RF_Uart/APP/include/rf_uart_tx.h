@@ -35,7 +35,8 @@ extern struct simple_buf *pRfBuf;
 void RF_UartTxInit( void );
 void RF_StatusQuery( void );
 void LedTimerInit( void );
-void LedTimerRescale( void );
+void LedTimerCalibBegin( void );
+void LedTimerCalibEnd( void );
 
 
 #ifdef __cplusplus

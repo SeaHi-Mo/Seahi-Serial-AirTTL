@@ -190,7 +190,11 @@ static void rfProcessRx( rfPackage_t *pPkt )
                 else
                 {
                     // 第一次连接，需靠近连接
-                    if( rssi > -35 )
+                    /* 【临时测试用】门槛放宽到 -110dBm = 实际不限制 RSSI，
+                     * 这样即使没焊天线（实测只有 -96dBm）也能配对成功，
+                     * 便于先验证 LED 指示 / USB 枚举 / 断连重连等逻辑。
+                     * 正式使用时应改回 -35（严格贴近）或 -60。 */
+                    if( rssi > -110 )
                     {
                         reg = 1;
                     }
@@ -415,7 +419,10 @@ static void rfProcessTimeout( void )
 }
 
 /* LED 时基：SysTick 自由计数 + 启动标定，使闪烁周期是真实时间 */
-static uint32_t gLedHalfTicks = 0;
+static uint32_t gLedHalfTicks  = 0;
+static uint32_t gLedPulseTicks = 0;             /* 数据提示脉冲宽度（计数） */
+static volatile uint32_t gLedDataTick  = 0;     /* 最近一次数据活动的时刻 */
+static volatile uint8_t  gLedDataActive = 0;    /* 是否有数据活动待显示 */
 
 /*******************************************************************************
  * @fn      LedTimerInit
@@ -439,17 +446,26 @@ void LedTimerInit( void )
     mDelaymS( 10 );                             /* 软件延时 10ms 作参考 */
     t1 = SysTick->CNT;
 
-    /* 注意：mDelaymS() 的循环次数是按编译期 FREQ_SYS 算的。若实际主频与
-     * FREQ_SYS 不同（例如从机跑 24MHz 而 FREQ_SYS=100MHz），这 10ms 的真实
-     * 时长 = 10ms × sysclk / FREQ_SYS。所以"毫秒计数"要按此比例修正，
-     * 否则闪烁会偏快/偏慢。 */
+    /* 注意：mDelaymS() 的软件循环次数是按编译期 FREQ_SYS 算的【固定值】，
+     * 主频越低，同样循环越慢：真实时长 = 10ms × FREQ_SYS / sysclk。
+     * 故"LED_BLINK_MS 毫秒的计数" = ticks × sysclk × LED_BLINK_MS / (10 × FREQ_SYS)。
+     * （主机 sysclk==FREQ_SYS 时系数为 1；从机跑 24MHz，差异很大，必须这样算） */
     sysclk = GetSysClock( );
     if( sysclk == 0 )
     {
         sysclk = FREQ_SYS;
     }
-    gLedHalfTicks = (uint32_t)( (uint64_t)( t1 - t0 ) * FREQ_SYS * LED_BLINK_MS
-                                / ( 10ULL * sysclk ) );
+    {
+        /* 先算出"每毫秒的 SysTick 计数"，再分别乘上各时间段 */
+        uint32_t ticks_per_ms = (uint32_t)( (uint64_t)( t1 - t0 ) * sysclk
+                                            / ( 10ULL * FREQ_SYS ) );
+        if( ticks_per_ms == 0 )
+        {
+            ticks_per_ms = 1;
+        }
+        gLedHalfTicks  = ticks_per_ms * LED_BLINK_MS;
+        gLedPulseTicks = ticks_per_ms * LED_DATA_PULSE_MS;
+    }
     if( gLedHalfTicks == 0 )
     {
         gLedHalfTicks = 1;
@@ -457,28 +473,58 @@ void LedTimerInit( void )
 }
 
 /*******************************************************************************
+ * @fn      LedDataPulse
+ *
+ * @brief   标记"刚有数据收发"，让 LED 亮 LED_DATA_PULSE_MS 毫秒（可见的闪一下）。
+ *          在中断里调用也安全。
+ *
+ * @return  None.
+ */
+void LedDataPulse( void )
+{
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE) && (LED_DATA_BLINK == 1)
+    gLedDataTick   = SysTick->CNT;
+    gLedDataActive = 1;
+#endif
+}
+
+/*******************************************************************************
  * @fn      LedStatusQuery
  *
- * @brief   LED 指示：未连接从机时快闪（周期 = LED_BLINK_MS*2 毫秒），
- *          连接成功后熄灭。基于 SysTick 真实时间，不依赖 USB / 主循环速度。
+ * @brief   LED 指示：未连接从机时快闪（周期 = LED_BLINK_MS*2 毫秒）；
+ *          连接成功后熄灭，但收到/发出数据时亮 LED_DATA_PULSE_MS 毫秒。
+ *          基于 SysTick 真实时间，不依赖 USB / 主循环速度。
  *
  * @return  None.
  */
 void LedStatusQuery( void )
 {
 #if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
-    uint32_t now;
+    uint32_t now = SysTick->CNT;
+    uint8_t  lit = 0;
 
     if(RF_bound_Flag)
     {
-        /* 已连接到从机 → 熄灭 */
-        GPIOA_ResetBits(LED_PIN);
+#if(LED_DATA_BLINK == 1)
+        if( gLedDataActive )
+        {
+            if( (uint32_t)( now - gLedDataTick ) < gLedPulseTicks )
+            {
+                lit = 1;
+            }
+            else
+            {
+                gLedDataActive = 0;
+            }
+        }
+#endif
+        if( lit )   GPIOA_SetBits(LED_PIN);        /* 数据活动 → 亮一下 */
+        else        GPIOA_ResetBits(LED_PIN);      /* 平时熄灭 */
         ledcount = 0;
         return;
     }
 
     /* 未连接 → 按真实时间翻转（ledcount 当"上次翻转时的 SysTick 计数"用） */
-    now = SysTick->CNT;
     if( (uint32_t)( now - ledcount ) >= gLedHalfTicks )
     {
         GPIOA_InverseBits(LED_PIN);
@@ -505,8 +551,8 @@ uint8_t RF_RxQuery( void *buf, typeBufSize *len )
     {
         if( read_buf( pRfBuf, buf, len ) == 0 )
         {
-#if(defined(LED_FUNC)) && (LED_FUNC == TRUE) && (LED_DATA_BLINK == 1)
-            GPIOA_InverseBits(LED_PIN);
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+            LedDataPulse( );        /* 无线侧收到数据 → LED 亮一下 */
 #endif
             PFIC_DisableIRQ(BLEL_IRQn);
             gRxDataStatus = DATA_STATUS_START;

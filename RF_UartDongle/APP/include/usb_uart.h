@@ -39,9 +39,11 @@ extern "C"
  */
 #define    LED_BLINK_MS      100
 
-/* 数据收发时是否额外闪一下 LED：1=闪，0=不闪。
- * 默认 0 —— 连接成功后 LED 保持熄灭。 */
-#define    LED_DATA_BLINK    0
+/* 数据收发时的 LED 提示：
+ *   1 = 收到/发出数据时让 LED 亮 LED_DATA_PULSE_MS 毫秒（肉眼可见的闪一下）
+ *   0 = 不提示，连接成功后 LED 保持熄灭 */
+#define    LED_DATA_BLINK    1
+#define    LED_DATA_PULSE_MS 30
 
 
 

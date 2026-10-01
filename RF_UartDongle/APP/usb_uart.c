@@ -1951,8 +1951,8 @@ uint8_t USB_RxQuery( void *buf, typeBufSize *len )
     if( gEnd2DataLen )
     {
 
-#if(defined(LED_FUNC)) && (LED_FUNC == TRUE) && (LED_DATA_BLINK == 1)
-        GPIOA_InverseBits(LED_PIN);
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+        LedDataPulse( );        /* USB 侧收到数据 → LED 亮一下 */
 #endif
         
         typeBufSize data_len;
