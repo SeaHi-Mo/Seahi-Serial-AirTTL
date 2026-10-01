@@ -127,6 +127,8 @@ struct simple_buf {
 | `RESET_PIN` / `DTR_PIN` | `(1<<2)` | PA2（`DTR_RTS_FUNC` 决定语义） |
 | `BOOT_PIN` / `RTS_PIN` | `(1<<3)` | PA3（同上） |
 | `LED_PIN` | `(1<<7)` | PA7 |
+| `LED_BLINK_MS` | `100` | LED 翻转间隔（ms），闪烁周期 = 2×该值 = **200ms**；基于 SysTick 真实时间标定（主机在 `usb_uart.h`，同名） |
+| `LED_DATA_BLINK` | `0` | 1 = 收发数据时额外闪一下 LED；0 = 不闪（连接成功后保持熄灭） |
 | `DATA_LEN_UART` | `32` | 一次搬运的阈值；缓冲里攒够这么多就立即置 `RCV_END` 不等超时 |
 | `BOUND_GET_PERI` | `10` | 发送绑定请求的周期（`uart.c` 内部） |
 

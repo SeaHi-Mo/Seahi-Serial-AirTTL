@@ -57,7 +57,7 @@ description: SeaHi-Serial-AirTTL 项目开发指南——基于沁恒 CH570Q 的
 | `PA1` | UART RXD | 接目标板 TX |
 | `PA2` | `RESET_PIN`（默认） | 一键下载用，接目标板 RESET；`DTR_RTS_FUNC=TRUE` 时改为 `DTR_PIN` |
 | `PA3` | `BOOT_PIN`（默认） | 接目标板 BOOT0；`DTR_RTS_FUNC=TRUE` 时改为 `RTS_PIN` |
-| `PA7` | LED（`LED_FUNC`） | 收发翻转；绑定后用 50000 次循环的长亮表示 |
+| `PA7` | LED（`LED_FUNC`） | **未与主机连接：快闪；连接成功：熄灭**（周期 = `LED_BLINK_MS`×2，默认 200ms；见第六节 §5） |
 | 两线调试口 | WCH-Link | 据手册 §1.2：**PA0/PA1 上电后默认被仿真调试口占用**，所以固件运行时会**主动关闭**它（`R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN`）才能把 PA0/PA1 当串口用；代价是下载失败时要**断电重上电** |
 
 从机默认 **115200-8-N-1**，上电后由主机下发的线码覆盖。**务必 GND 共地。**
@@ -67,7 +67,7 @@ description: SeaHi-Serial-AirTTL 项目开发指南——基于沁恒 CH570Q 的
 | 引脚 | 功能 |
 |---|---|
 | USB D+/D- | USB 2.0 全速，枚举为虚拟串口 |
-| `PA7` | LED（`LED_FUNC`） |
+| `PA7` | LED（`LED_FUNC`） | **未与从机连接：快闪；连接成功：熄灭**（同从机；实现见第六节 §5） |
 | `PA2`/`PA3` | 调试串口 RXD/TXD，**仅在 `DEBUG` 宏打开时**（本工程 `CMakeLists.txt` 已带 `-DDEBUG`，`UART_Remap` 到 PA3=TX / PA2=RX） |
 
 主机启动即 `SetSysClock(CLK_SOURCE_HSE_PLL_100MHz)`；从机启动为 24MHz，运行中按波特率自适应切换。
@@ -255,6 +255,43 @@ CH341 厂商请求要在 EP0 里自己解析：`0x9A` 写寄存器（设波特�
 
 ---
 
+### 5. LED 指示与 USB 枚举策略（本项目定制）
+
+> 这两条是按实际使用需求后加的，**与沁恒原始 SDK 行为不同**，改代码前先看这里。
+
+**① 两端对称的 LED 语义**（`LED_FUNC=TRUE`，PA7）
+
+| 状态 | LED |
+|---|---|
+| 未与对端连接 | **快闪** |
+| 连接成功 | **熄灭**（收发数据时也不亮，`LED_DATA_BLINK=0`） |
+
+- 闪烁周期 = `LED_BLINK_MS` × 2 毫秒（默认 `100` → **200ms**）
+- 宏位置：从机 `RF_Uart/APP/include/uart.h`、主机 `RF_UartDongle/APP/include/usb_uart.h`
+- **时基是 SysTick 真实时间**：启动时 `LedTimerInit()` 用 `mDelaymS(10)` 标定一次，
+  因此周期与主循环跑多快无关。早期"数主循环圈数"的写法已废弃（两端、各状态下快慢都不一致）
+- ⚠️ 标定公式里按 `GetSysClock()/FREQ_SYS` 做了修正：本工程 `FREQ_SYS` 编译期固定
+  100MHz，而**从机实际跑 24MHz**，`mDelaymS()` 在从机上只有标称时长的 24%。
+  从机还在切主频处调用 `LedTimerRescale()` 做比例补偿
+
+**② 主机的 USB 枚举策略**（`RF_UartDongle/APP/main.c` 的 `process_main()`）
+
+| 状态 | USB |
+|---|---|
+| 未连接从机 | **不枚举**（不调 `USB_Init()`）—— PC 上看不到任何设备 |
+| 连接成功（`RF_bound_Flag` 置位） | `USB_Init()` 枚举，PC 出现虚拟串口 |
+| 断开 | `USB_DeInit()` 清 `RB_UC_DEV_PU_EN`，PC 看到"设备拔出" |
+
+- 顺带好处：未配对时 `USB_Init()` 里那句 `R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN`
+  不执行，**PA0/PA1 调试口保持可用，WCH-Link 可随时连上烧录**，不必抢复位窗口
+- ⚠️ **`RF_RxQuery()` 必须无条件调用**：`USB_StatusQuery()` 里不能把它整体关在
+  `if(devinf.UsbAddress)` 内。它除了把无线数据交给 USB 上传，还负责把 `gRfStatus`
+  从 `RF_STATUS_WAIT` 拉回 `RF_STATUS_RX` 并 `rf_rx_start()`；而 `rfProcessTimeout()`
+  与 `rfProcessCrcError()` 都会把状态置成 WAIT —— 未配对阶段本来就在"等广播"、
+  接收超时频繁，一旦不调用就会**接收停摆、永远收不到绑定请求**
+
+---
+
 ## 七、编译与烧写
 
 ### 编译（Linux，工具链随仓库提供）
@@ -271,6 +308,16 @@ cd ../RF_UartDongle && cmake -B build -G "Unix Makefiles" && cmake --build build
 ```
 
 产物：`build/{RF_Uart,RF_UartDongle}.{elf,hex,map,lst}`。
+
+> ⚠️ **改了头文件必须强制重编**：本工程的 CMake **没有正确追踪 `.h` 依赖** —— 改完
+> `usb_uart.h` / `uart.h` 这类头文件后直接 `cmake --build build`，它可能只打印
+> `Built target` 而**根本不重新编译**，`hex` 的时间戳与 MD5 都不会变。
+> 稳妥做法：
+> ```bash
+> touch APP/main.c APP/rf_uart_rx.c      # 或 cmake --build build --clean-first
+> cmake --build build -j$(nproc)
+> md5sum build/*.hex                      # 确认产物真的变了
+> ```
 
 > **为什么必须用这套工具链**：`-march=rv32imc_zba_zbb_zbc_zbs_xw` 里的 `xw` 是沁恒自有扩展，`RVMSIS/core_riscv.h` 的 `__MCPY()` 直接内联了 `mcpy` 指令。**xPack / 发行版的 RISC-V GCC 不支持**——它们能接受 `-march=..._xw0p1` 这种写法，但汇编时会报 `unrecognized opcode 'mcpy'`，甚至触发 GCC ICE。
 > `TOOLCHAIN_FOLDER` 默认已指向子模块；要换 MRS 自带工具链可覆盖 `-DTOOLCHAIN_FOLDER=...`。
@@ -377,6 +424,9 @@ git tag -a v0.1.1 -m "..." && git push origin v0.1.1
 | 波特率不对 / 乱码 | 电脑端串口工具的设置会下发到从机，检查目标设备实际线码是否一致；高速档（400k~1M）会切 100MHz 主频 |
 | 丢数据 | 三级缓冲任一满都会打印 `#ERR` 并丢包；从机 3KB 串口缓冲、RF/USB 各 512B，高波特率下要留意溢出 |
 | 下载失败 / WCH-Link 连不上 | 固件运行中关了仿真调试接口（PA0/PA1 让给串口），**断电重上电**后再下载 |
+| 改了头文件但行为没变 / 固件仿佛没更新 | CMake 未正确追踪 `.h` 依赖，`cmake --build` 可能不重编 → `touch APP/*.c` 或 `--clean-first`，并用 `md5sum build/*.hex` 确认 |
+| 从机上时间/延时偏快约 4 倍 | `FREQ_SYS` 编译期固定 100000000，而从机实际跑 24MHz，`mDelaymS()`/`mDelayuS()` 只有标称时长的 24%。涉及真实时间的代码要按 `GetSysClock()/FREQ_SYS` 修正（LED 时基即如此） |
+| 未配对时 PC 上看不到 Dongle 串口 | **有意设计**：未与从机连接时不枚举 USB，配对成功后才出现（见第六节 §5） |
 | WSL 里烧录，OpenOCD 报 `Error: open failed` | WCH-LinkE 插在 Windows 上但**没映射进 WSL**（或 `vhci_hcd` 未加载、`usbip` 客户端缺失）→ 见 [references/wsl-usbip.md](./references/wsl-usbip.md) |
 | WSL 里烧录，OpenOCD 报 `libusb_open() failed with LIBUSB_ERROR_ACCESS` | USB 设备节点属主是 root，普通用户无写权限 → 加 udev 规则或 `sudo` 跑，见 [references/wsl-usbip.md](./references/wsl-usbip.md) 第四节 |
 | 内存不够 / 链接报错 | RAM 仅 12 KB（从机已用 92.6%）、Flash 可用 236 KB，按 `build/*.map` 精简 |
