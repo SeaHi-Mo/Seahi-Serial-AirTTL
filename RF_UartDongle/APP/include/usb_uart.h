@@ -31,6 +31,19 @@ extern "C"
 #define    LED_PIN        (1<<7) 
 #endif
 
+/* LED 指示策略（Dongle 定制）
+ *   未与从机连接 —— LED 快闪
+ *   连接成功后   —— LED 熄灭
+ * LED_BLINK_MS = 翻转一次 LED 的间隔（毫秒），闪烁周期 = 2 × 该值。
+ * 基于 SysTick 真实时间，与主循环速度无关（启动时由 LedTimerInit 标定）。
+ */
+#define    LED_BLINK_MS      100
+
+/* 数据收发时是否额外闪一下 LED：1=闪，0=不闪。
+ * 默认 0 —— 连接成功后 LED 保持熄灭。 */
+#define    LED_DATA_BLINK    0
+
+
 
 
 //Line Code结构
@@ -46,6 +59,7 @@ extern LINE_CODE Uart0Para;
 
 void USB_Init( void );
 void USB_StatusQuery( void );
+void USB_DeInit( void );
 uint8_t USB_RxQuery( void *buf, typeBufSize *len );
 
 #ifdef __cplusplus

@@ -21,12 +21,38 @@
 /*********************************************************************
  * GLOBAL TYPEDEFS
  */
+static uint8_t gUsbInited = 0;
+
 __attribute__((used))
 __HIGH_CODE
 void process_main( void )
 {
     while(1)
     {
+        /* LED 独立于 USB：未连接从机 → 快闪；连接成功 → 熄灭 */
+        LedStatusQuery( );
+
+        if( RF_bound_Flag )
+        {
+            /* 与从机连接成功后才启动 USB 枚举，
+             * 免得电脑上先冒出一个还没配上对的空串口 */
+            if( gUsbInited == 0 )
+            {
+                gUsbInited = 1;
+                USB_Init( );
+            }
+        }
+        else
+        {
+            /* 从机断开 → 收回串口（主机侧看到"设备已拔出"），
+             * 回到"未连接"状态，等待从机重新广播、自动重连 */
+            if( gUsbInited )
+            {
+                gUsbInited = 0;
+                USB_DeInit( );
+            }
+        }
+
         USB_StatusQuery();
     }
 }
@@ -57,9 +83,10 @@ int main(void)
 
     PRINT("start.\n");
     PRINT("%s\n", VER_RF_LIB);
-    USB_Init( );
+    /* USB 暂不初始化：未与从机连接时不枚举（见 process_main） */
     RFRole_Init( );
     RF_UartRxInit( );
+    LedTimerInit( );            /* 标定 LED 时基：周期 = LED_BLINK_MS*2 ms */
     process_main( );
 }
 

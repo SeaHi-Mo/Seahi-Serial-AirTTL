@@ -57,6 +57,19 @@
 #define    LED_PIN        (1<<7) 
 #endif
 
+/* LED 指示策略（从机定制）
+ *   未与主机连接 —— LED 快闪
+ *   连接成功后   —— LED 熄灭
+ * LED_BLINK_MS = 翻转一次 LED 的间隔（毫秒），闪烁周期 = 2 × 该值。
+ * 基于 SysTick 真实时间（启动时由 LedTimerInit 标定，切主频时自动补偿）。
+ */
+#define    LED_BLINK_MS      100
+
+/* 数据收发时是否额外闪一下 LED：1=闪，0=不闪。
+ * 默认 0 —— 连接成功后 LED 保持熄灭。 */
+#define    LED_DATA_BLINK    0
+
+
 
 enum uart_status
 {

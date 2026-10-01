@@ -1885,13 +1885,24 @@ void USB_StatusQuery( void )
         USB_IRQProcessHandler( );
         usb_irq_flag[i] = 0;
     }
-    if( devinf.UsbAddress )
-    {
+    /* RF_RxQuery() 必须【无条件】调用：
+     * 它除了"把无线收到的数据交给 USB 上传"，还负责把 gRfStatus 从 WAIT 拉回 RX
+     * 并重启 rf 接收（接收超时 rfProcessTimeout / CRC 错误 rfProcessCrcError
+     * 之后都会停在 WAIT）。若它只在启动时被调用一次，未配对阶段的 RF 接收会
+     * 停摆，主机永远收不到从机的绑定请求 —— 于是永远连不上。
+     * 所以：RF 状态机无条件跑，真正的 USB 上传只在已枚举时做。 */
 #if ( USB_WORK_MODE== USB_VENDOR_MODE)
-        if( (R8_UEP2_CTRL&MASK_UEP_T_RES) == UEP_T_RES_NAK )
+    if( ( devinf.UsbAddress == 0 ) ||
+        ( (R8_UEP2_CTRL&MASK_UEP_T_RES) == UEP_T_RES_NAK ) )
+    {
+        len  = MAX_PACKET_SIZE/2;
+        if( RF_RxQuery( &Ep2Buffer[64], &len ) )
         {
-            len  = MAX_PACKET_SIZE/2;
-            if( RF_RxQuery( &Ep2Buffer[64], &len ) )
+            if( devinf.UsbAddress == 0 )
+            {
+                /* USB 尚未枚举：丢弃这批数据，只维持 RF 状态机运转 */
+            }
+            else
             {
                 if( len > 32 )
                 {
@@ -1903,8 +1914,8 @@ void USB_StatusQuery( void )
                 PFIC_EnableIRQ(USB_IRQn);
             }
         }
-#endif
     }
+#endif
  }
 
 /*******************************************************************************
@@ -1940,7 +1951,7 @@ uint8_t USB_RxQuery( void *buf, typeBufSize *len )
     if( gEnd2DataLen )
     {
 
-#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE) && (LED_DATA_BLINK == 1)
         GPIOA_InverseBits(LED_PIN);
 #endif
         
@@ -1977,6 +1988,45 @@ void USB_Init( void )
     InitUSBDevice();
     PFIC_EnableIRQ( USB_IRQn );
     usb_buffer_create(&pUsbBuf);
+}
+
+/*******************************************************************************
+ * @fn      USB_DeInit
+ *
+ * @brief   停止 USB 设备：关闭 D+ 上拉，主机侧看到"设备已拔出"。
+ *          与 USB_Init() 配对，可反复调用（从机断开后回到"未枚举"状态，
+ *          重新配对成功时再 USB_Init() 枚举）。
+ *
+ * @return  None.
+ */
+void USB_DeInit( void )
+{
+    uint8_t k;
+
+    /* 先禁 USB 中断，避免关闭过程中再进中断 */
+    PFIC_DisableIRQ( USB_IRQn );
+
+    /* 关闭设备上拉并复位 USB 控制器 → 主机认为设备已拔出 */
+    R8_USB_CTRL   = 0;
+    R8_USB_INT_FG = 0xFF;
+
+    /* 清会话状态，使 USB_StatusQuery() 不再访问 USB 寄存器 */
+    devinf.UsbAddress = 0;
+    gEnd2DataLen      = 0;
+    usb_irq_r_idx     = 0;
+    usb_irq_w_idx     = 0;
+    for( k = 0; k < USB_IRQ_FLAG_NUM; k++ )
+    {
+        usb_irq_flag[k] = 0;
+    }
+
+    /* 清空 USB 收发缓冲，避免重新枚举后吐出旧数据 */
+    if( pUsbBuf )
+    {
+        pUsbBuf->read     = pUsbBuf->start;
+        pUsbBuf->write    = pUsbBuf->start;
+        pUsbBuf->data_len = 0;
+    }
 }
 
 

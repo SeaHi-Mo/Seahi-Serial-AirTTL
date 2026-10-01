@@ -36,6 +36,7 @@ rfPackage_t *pPkt_t;
 static void rfProcessRx( rfPackage_t *pPkt );
 static void rfProcessTx( void );
 static void rfProcessTimeout( void );
+void LedTimerRescale( void );
 
 // tf status callbacks
 rfStatusCBs_t rfCBs =
@@ -195,6 +196,7 @@ static void rfProcessRx( rfPackage_t *pPkt )
                     SetSysClock(CLK_SOURCE_HSE_PLL_24MHz);
                 }
                 mDelaymS(10);
+                LedTimerRescale( );                 /* 主频变了，LED 时基按比例补偿 */
 
                 UART_SetBuad( pRsp_t->buad_t.BaudRate );
                 // 停止位
@@ -284,7 +286,7 @@ static void rfProcessRx( rfPackage_t *pPkt )
                         PFIC_SetPendingIRQ( UART_IRQn );
                     }
                 }
-#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE) && (LED_DATA_BLINK == 1)
             GPIOA_InverseBits(LED_PIN);
 #endif
 
@@ -363,6 +365,66 @@ static  void rfProcessTimeout( void )
 }
 
 
+/* LED 时基：SysTick 自由计数 + 启动标定，使闪烁周期是真实时间 */
+static uint32_t gLedHalfTicks = 0;
+static uint32_t gLedCalClock  = 0;
+
+/*******************************************************************************
+ * @fn      LedTimerInit
+ *
+ * @brief   初始化 LED 时基：SysTick 自由计数（不使能中断），并用 mDelaymS(10)
+ *          标定出 LED_BLINK_MS 毫秒对应的计数值。
+ *
+ * @return  None.
+ */
+void LedTimerInit( void )
+{
+    uint32_t t0, t1;
+
+    SysTick->CNTL = 0;
+    SysTick->CMP  = 0xFFFFFFFF;                 /* 最大重载值，不使能中断 */
+    SysTick->SR   = 0;
+    SysTick->CTLR = SysTick_CTLR_STRE | SysTick_CTLR_STCLK | SysTick_CTLR_STE;
+
+    t0 = SysTick->CNT;
+    mDelaymS( 10 );                             /* 软件延时 10ms 作参考 */
+    t1 = SysTick->CNT;
+
+    /* 注意：本工程 FREQ_SYS 编译期是 100MHz，而从机启动跑 24MHz，
+     * mDelaymS() 的软件循环是按 FREQ_SYS 算的，所以这 10ms 的真实时长
+     * = 10ms × sysclk / FREQ_SYS。按此比例修正，否则闪烁会偏快约 4 倍。 */
+    gLedCalClock = GetSysClock( );
+    if( gLedCalClock == 0 )
+    {
+        gLedCalClock = FREQ_SYS;
+    }
+    gLedHalfTicks = (uint32_t)( (uint64_t)( t1 - t0 ) * FREQ_SYS * LED_BLINK_MS
+                                / ( 10ULL * gLedCalClock ) );
+    if( gLedHalfTicks == 0 )
+    {
+        gLedHalfTicks = 1;
+    }
+}
+
+/*******************************************************************************
+ * @fn      LedTimerRescale
+ *
+ * @brief   从机会在 24MHz/100MHz 之间切主频，SysTick 计数频率随之变化，
+ *          这里按"当前主频 / 标定时主频"的比例修正 LED 翻转间隔。
+ *
+ * @return  None.
+ */
+void LedTimerRescale( void )
+{
+    uint32_t cur = GetSysClock( );
+
+    if( ( cur != 0 ) && ( gLedCalClock != 0 ) && ( cur != gLedCalClock ) )
+    {
+        gLedHalfTicks = (uint32_t)( (uint64_t)gLedHalfTicks * cur / gLedCalClock );
+        gLedCalClock  = cur;
+    }
+}
+
 /*******************************************************************************
  * @fn      RF_StatusQuery
  *
@@ -378,19 +440,22 @@ void RF_StatusQuery( void )
     uint8_t s;
 
 #if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
-    //获取bound标志
+    /* LED 指示：未连接 → 快闪（周期 = LED_BLINK_MS*2 ms）；连接成功 → 熄灭。
+     * ledcount 当"上次翻转时的 SysTick 计数"用，与主循环速度无关。 */
     if(RF_bound_Flag)
     {
-        
-        ledcount++;
-        if(ledcount >=50000)
-        {
-            GPIOA_SetBits(LED_PIN);  
-            ledcount = 0;
-        }
+        GPIOA_ResetBits(LED_PIN);
+        ledcount = 0;
     }
     else
-        GPIOA_ResetBits(LED_PIN);
+    {
+        uint32_t now = SysTick->CNT;
+        if( (uint32_t)( now - ledcount ) >= gLedHalfTicks )
+        {
+            GPIOA_InverseBits(LED_PIN);
+            ledcount = now;
+        }
+    }
 #endif
     if( gTxBuf.status == STA_IDLE )
     {
@@ -401,7 +466,7 @@ void RF_StatusQuery( void )
         // 发送数据
         if( s == 0 )
         {
-#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE) && (LED_DATA_BLINK == 1)
             GPIOA_InverseBits(LED_PIN);
 #endif
 

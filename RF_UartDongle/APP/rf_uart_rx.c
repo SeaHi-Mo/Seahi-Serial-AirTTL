@@ -414,6 +414,79 @@ static void rfProcessTimeout( void )
     }
 }
 
+/* LED 时基：SysTick 自由计数 + 启动标定，使闪烁周期是真实时间 */
+static uint32_t gLedHalfTicks = 0;
+
+/*******************************************************************************
+ * @fn      LedTimerInit
+ *
+ * @brief   初始化 LED 时基：SysTick 自由计数（不使能中断），并用 mDelaymS(10)
+ *          标定出 LED_BLINK_MS 毫秒对应的计数值。
+ *          这样闪烁周期 = LED_BLINK_MS*2 毫秒，与主循环跑多快无关。
+ *
+ * @return  None.
+ */
+void LedTimerInit( void )
+{
+    uint32_t t0, t1, sysclk;
+
+    SysTick->CNTL = 0;
+    SysTick->CMP  = 0xFFFFFFFF;                 /* 最大重载值，不使能中断 */
+    SysTick->SR   = 0;
+    SysTick->CTLR = SysTick_CTLR_STRE | SysTick_CTLR_STCLK | SysTick_CTLR_STE;
+
+    t0 = SysTick->CNT;
+    mDelaymS( 10 );                             /* 软件延时 10ms 作参考 */
+    t1 = SysTick->CNT;
+
+    /* 注意：mDelaymS() 的循环次数是按编译期 FREQ_SYS 算的。若实际主频与
+     * FREQ_SYS 不同（例如从机跑 24MHz 而 FREQ_SYS=100MHz），这 10ms 的真实
+     * 时长 = 10ms × sysclk / FREQ_SYS。所以"毫秒计数"要按此比例修正，
+     * 否则闪烁会偏快/偏慢。 */
+    sysclk = GetSysClock( );
+    if( sysclk == 0 )
+    {
+        sysclk = FREQ_SYS;
+    }
+    gLedHalfTicks = (uint32_t)( (uint64_t)( t1 - t0 ) * FREQ_SYS * LED_BLINK_MS
+                                / ( 10ULL * sysclk ) );
+    if( gLedHalfTicks == 0 )
+    {
+        gLedHalfTicks = 1;
+    }
+}
+
+/*******************************************************************************
+ * @fn      LedStatusQuery
+ *
+ * @brief   LED 指示：未连接从机时快闪（周期 = LED_BLINK_MS*2 毫秒），
+ *          连接成功后熄灭。基于 SysTick 真实时间，不依赖 USB / 主循环速度。
+ *
+ * @return  None.
+ */
+void LedStatusQuery( void )
+{
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+    uint32_t now;
+
+    if(RF_bound_Flag)
+    {
+        /* 已连接到从机 → 熄灭 */
+        GPIOA_ResetBits(LED_PIN);
+        ledcount = 0;
+        return;
+    }
+
+    /* 未连接 → 按真实时间翻转（ledcount 当"上次翻转时的 SysTick 计数"用） */
+    now = SysTick->CNT;
+    if( (uint32_t)( now - ledcount ) >= gLedHalfTicks )
+    {
+        GPIOA_InverseBits(LED_PIN);
+        ledcount = now;
+    }
+#endif
+}
+
 /*******************************************************************************
  * @fn      RF_RxQuery
  *
@@ -425,22 +498,6 @@ __HIGH_CODE
 uint8_t RF_RxQuery( void *buf, typeBufSize *len )
 {
 
-#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
-    //获取bound标志
-    if(RF_bound_Flag)
-    {
-        ledcount++;
-        if(ledcount >=80000)
-        {
-            GPIOA_SetBits(LED_PIN);  
-            ledcount = 0;
-        }
-    }
-    else
-    {
-        GPIOA_ResetBits(LED_PIN);
-    }
-#endif
 
     uint8_t *p;
 
@@ -448,7 +505,7 @@ uint8_t RF_RxQuery( void *buf, typeBufSize *len )
     {
         if( read_buf( pRfBuf, buf, len ) == 0 )
         {
-#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE) && (LED_DATA_BLINK == 1)
             GPIOA_InverseBits(LED_PIN);
 #endif
             PFIC_DisableIRQ(BLEL_IRQn);

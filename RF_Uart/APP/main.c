@@ -46,6 +46,7 @@ int main(void)
     PRINT("%s\n", VER_RF_LIB);
     RFRole_Init( );
     RF_UartTxInit( );
+    LedTimerInit( );            /* 标定 LED 时基：周期 = LED_BLINK_MS*2 ms */
     process_main();
 }
 

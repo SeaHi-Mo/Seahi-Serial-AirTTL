@@ -26,6 +26,10 @@ extern "C"
 
 void RF_UartRxInit( void );
 uint8_t RF_RxQuery( void *buf, typeBufSize *len );
+void LedStatusQuery( void );
+void LedTimerInit( void );
+
+extern uint8_t volatile RF_bound_Flag;
 
 
 #ifdef __cplusplus
