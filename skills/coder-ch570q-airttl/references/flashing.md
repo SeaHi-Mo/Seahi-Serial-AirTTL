@@ -16,6 +16,27 @@
 
 > 本项目**没有**引出独立的调试排针，需要焊线或飞线到芯片的两线调试脚；从机的 PA2/PA3 已被"一键下载"功能占用（见下节）。
 
+### 1.1 ⚠️ WSL 用户：先把 WCH-LinkE 映射进来
+
+如果**编译与烧录都在 WSL2 里做、而 WCH-LinkE 插在 Windows 上**，直接跑 OpenOCD 会报 `Error: open failed`（`libusb` 在 WSL 里根本看不到这个设备）——必须先经 **usbipd** 把设备转发进 WSL：
+
+```bash
+# WSL 侧：加载虚拟 USB 主机控制器（没有 /sys/bus/usb 就是没加载，每次 WSL 重启后都要重做）
+sudo modprobe vhci-hcd
+```
+
+```powershell
+# Windows 侧：bind 需要管理员；attach 把设备转发给 WSL
+usbipd list                                   # 认准 WCH-LinkE 的 BUSID，例：9-1  1a86:8010  WCH-LinkRV…
+usbipd bind --busid 9-1
+usbipd attach --wsl --busid 9-1
+```
+
+验证（WSL 内）：`lsusb` 应出现 `1a86:8010 QinHeng Electronics WCH-Link`，并多出 `/dev/ttyACM0`。
+
+> **完整流程见 [wsl-usbip.md](./wsl-usbip.md)** —— 含 `usbip` 与 WSL 内核版本不匹配的坑、无 sudo 密码时的免密提权、
+> `LIBUSB_ERROR_ACCESS` 的 udev 权限修复、以及 WSL 重启后的自动化。
+
 ---
 
 ## 二、⚠️ 两个最容易卡住的前提（先读这段）
@@ -148,10 +169,12 @@ skills/coder-ch570q-airttl/scripts/flash.sh --reset                            #
 
 | ✅ 已验证 | ❌ 未验证 |
 |---|---|
-| WCH 定制版 openocd 能加载 `wch-riscv.cfg`，输出 `Ready for Remote Connections` | **没有接入 WCH-Link 硬件，无法验证真实连接、擦写与校验** |
-| 无设备时停在 `Error: open failed` —— 说明 `wlinke` 驱动加载正常，仅缺硬件 | `program` / `verify` 的真实执行结果 |
+| WCH 定制版 openocd 能加载 `wch-riscv.cfg`，输出 `Ready for Remote Connections` | **目标芯片的实际擦写与校验**：`program` / `verify` 的真机结果 |
+| **接上 WCH-LinkE 后能认出调试器**：`Info : WCH-LinkE mode:RV version 2.21` | 目标板上的烧录结果（调试口被固件关闭，需趁复位窗口抢） |
+| 无设备 / 无权限时停在 `Error: open failed` —— 说明 `wlinke` 驱动加载正常 | |
+| **WSL 下经 usbipd 映射后同样可用**（见 [wsl-usbip.md](./wsl-usbip.md)）；普通用户需先处理 USB 节点权限 | |
 
-也就是说：**本文的命令与参数取自 MRS 工程配置（`RF_Uart.launch`）与已验证可用的 FlashKey 烧录脚本，语法正确、路径已核实；但"真机烧录成功"必须由你接上 WCH-Link 后实测确认。**
+也就是说：**本文的命令与参数取自 MRS 工程配置（`RF_Uart.launch`）与已验证可用的 FlashKey 烧录脚本；"OpenOCD ↔ WCH-LinkE 的通信"已在本机（含 WSL 映射后）实测跑通，但"芯片真的写进去了"仍取决于接线与是否抢到复位窗口，需你实测确认。**
 
 ---
 
@@ -242,6 +265,8 @@ openocd -f /usr/local/share/openocd/scripts/target/wch-riscv.cfg \
 | 烧从机后无法再连 WCH-Link | 正常现象（调试口被复用）。断电重上电后再烧 |
 | 两个固件都新烧了却连不上 | 检查两端 `rf.h` 的频点/PHY/`AA`/`CRC_*` 是否同批；首次配对要贴近（RSSI > −35 dBm） |
 | Windows 上 MRS 能烧、命令行不行 | 命令行需用 WCH 定制版 OpenOCD（带 `wlinke` 驱动），发行版 `openocd` 不含该驱动 |
+| WSL 里 `Error: open failed` | WCH-LinkE 还没映射进 WSL（或 `vhci_hcd` 未加载、`usbip` 客户端缺失）→ 见 [wsl-usbip.md](./wsl-usbip.md) |
+| WSL 里 `libusb_open() failed with LIBUSB_ERROR_ACCESS` | USB 设备节点属主是 root → 加 udev 规则，或 `sudo` 跑 → 见 [wsl-usbip.md](./wsl-usbip.md) 第四节 |
 
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: coder-ch570q-airttl
-description: SeaHi-Serial-AirTTL 项目开发指南——基于沁恒 CH570Q 的 2.4G 无线串口调试器（"无线串口延长线"），含从机 RF_Uart（UART⇄2.4G）与主机 RF_UartDongle（USB⇄2.4G）两个固件。当需要修改本项目的无线透传协议、串口线码无线同步、ST 一键下载时序、USB（CH341 兼容/CDC）实现、从机自适应主频，或编译、烧写、排查无线连不上/乱码/丢数据等问题时使用。
+description: SeaHi-Serial-AirTTL 项目开发指南——基于沁恒 CH570Q 的 2.4G 无线串口调试器（"无线串口延长线"），含从机 RF_Uart（UART⇄2.4G）与主机 RF_UartDongle（USB⇄2.4G）两个固件。当需要修改本项目的无线透传协议、串口线码无线同步、ST 一键下载时序、USB（CH341 兼容/CDC）实现、从机自适应主频，或编译、烧写（含 WSL 下用 usbipd 把 WCH-LinkE 映射进来调试）、排查无线连不上/乱码/丢数据等问题时使用。
 ---
 
 # SeaHi-Serial-AirTTL 开发指南（沁恒 CH570Q）
@@ -290,6 +290,18 @@ cd ../RF_UartDongle && cmake -B build -G "Unix Makefiles" && cmake --build build
 
 两颗都是 CH570Q，用 **WCH-Link / WCH-LinkE**（SDI 单线调试接口）烧写。**主机烧 `RF_UartDongle`，从机烧 `RF_Uart`，别烧错。**
 
+> **WSL 环境注意**：若编译/烧录在 WSL2 里做、WCH-LinkE 插在 Windows 上，**必须先把设备映射进来**，否则 OpenOCD 报 `Error: open failed`（WSL 里 `libusb` 看不到它）：
+> ```bash
+> # WSL（每次重启后重做；没有 /sys/bus/usb 就是没加载）
+> sudo modprobe vhci-hcd
+> ```
+> ```powershell
+> # Windows（bind 需管理员）
+> usbipd bind --busid 9-1 ; usbipd attach --wsl --busid 9-1
+> ```
+> 之后 WSL 里 `lsusb` 应见 `1a86:8010 QinHeng Electronics WCH-Link`；普通用户还需处理 USB 节点权限（否则 `LIBUSB_ERROR_ACCESS`）。
+> **完整流程见 [references/wsl-usbip.md](./references/wsl-usbip.md)。**
+
 **完整烧录指南见 [references/flashing.md](./references/flashing.md)** —— 含"该用哪份 OpenOCD"、各烧录模式（普通 / 擦除重写 / 解除读保护 / 全片擦除）、**别擦掉从机绑定信息**，以及验证状态说明。最常用的一条命令：
 
 ```bash
@@ -365,6 +377,8 @@ git tag -a v0.1.1 -m "..." && git push origin v0.1.1
 | 波特率不对 / 乱码 | 电脑端串口工具的设置会下发到从机，检查目标设备实际线码是否一致；高速档（400k~1M）会切 100MHz 主频 |
 | 丢数据 | 三级缓冲任一满都会打印 `#ERR` 并丢包；从机 3KB 串口缓冲、RF/USB 各 512B，高波特率下要留意溢出 |
 | 下载失败 / WCH-Link 连不上 | 固件运行中关了仿真调试接口（PA0/PA1 让给串口），**断电重上电**后再下载 |
+| WSL 里烧录，OpenOCD 报 `Error: open failed` | WCH-LinkE 插在 Windows 上但**没映射进 WSL**（或 `vhci_hcd` 未加载、`usbip` 客户端缺失）→ 见 [references/wsl-usbip.md](./references/wsl-usbip.md) |
+| WSL 里烧录，OpenOCD 报 `libusb_open() failed with LIBUSB_ERROR_ACCESS` | USB 设备节点属主是 root，普通用户无写权限 → 加 udev 规则或 `sudo` 跑，见 [references/wsl-usbip.md](./references/wsl-usbip.md) 第四节 |
 | 内存不够 / 链接报错 | RAM 仅 12 KB（从机已用 92.6%）、Flash 可用 236 KB，按 `build/*.map` 精简 |
 | Release 里没有固件 | workflow 只在 `v*` tag 上触发，且 tag 必须指向**含 workflow 文件**的提交 |
 
@@ -384,6 +398,7 @@ git tag -a v0.1.1 -m "..." && git push origin v0.1.1
 | [rf-stack-api.md](./references/rf-stack-api.md) | 沁恒 **2.4G 协议栈**（`CH572rf.h`）+ **RISC-V 内核层**（`core_riscv.h`）：`RFRole_*` / `RFIP_*`、CSR 操作、`PFIC_*` 中断控制、`__MCPY` 等 xw 扩展、`__HIGH_CODE` | 调射频参数、写中断、理解 `.highcode` |
 | [chip-spec.md](./references/chip-spec.md) | **CH570Q 芯片规格**：系列差异、内核/存储与地址映射、外设基址、CH570Q 引脚表、PA0/PA1 调试口约束、复位脚可选 PA7/PA8、电气与低功耗参数、2.4G 射频参数 | 查硬件规格、核对接线、调低功耗 |
 | [flashing.md](./references/flashing.md) | **烧录与调试指南**：项目自带 `tools/openocd` 子模块（clone 即用）、各烧录模式、解除读保护、别擦掉绑定信息、GDB 调试、验证状态 | 烧写、排查烧录问题 |
+| [wsl-usbip.md](./references/wsl-usbip.md) | **WSL 下把 WCH-LinkE 映射进来**：usbipd `bind`/`attach` 全流程、`vhci_hcd` 与 `usbip` 版本不匹配的坑、无 sudo 密码时的免密提权、`LIBUSB_ERROR_ACCESS` 的 udev 权限修复、重启后自动化、排错对照（**本机实测**） | 在 WSL 里烧录/调试、WSL 里看不到 WCH-Link |
 | [resources.md](./references/resources.md) | 数据手册、工具链、烧写调试工具、外部资料入口 | 查手册、找工具 |
 
 > **三层 API 的修改权限不同**：**APP 层**（本项目所写，可自由改）→ **协议栈 / 外设库**（沁恒预编译库与官方驱动，**只调用不修改**）→ **内核层**（`core_riscv.h`，RISC-V 抽象，只调用）。
