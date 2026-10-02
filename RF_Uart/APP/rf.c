@@ -258,7 +258,7 @@ void RFRole_Init(void)
         gTxParam.crcPoly = CRC_POLY;
         gTxParam.properties = Properties.cfgVal;
         gTxParam.waitTime = 80*2;
-        gTxParam.txPowerVal = LL_TX_POWEER_0_DBM;
+        gTxParam.txPowerVal = LL_TX_POWEER_7_DBM;   /* 最高档 +7dBm(约5mW)：提升距离与抗干扰；EIRP 仍远低于 20dBm 限值 */
     }
 
     // RX相关参数，全局变量

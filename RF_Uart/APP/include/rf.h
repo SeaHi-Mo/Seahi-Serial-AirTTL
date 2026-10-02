@@ -23,13 +23,15 @@ extern "C"
  * 按 f = 2400 + ch (MHz) 换算：
  *   WiFi ch1 =2412MHz 占 2402~2422 → 本芯片 ch2~22
  *   WiFi ch6 =2437MHz 占 2427~2447 → 本芯片 ch27~47
- *   WiFi ch11=2462MHz 占 2452~2472 → 本芯片 ch52~72（本芯片可用到 63）
- * 故取两处缝隙的中心：ch24/25(2424/2425MHz) 与 ch49/50(2449/2450MHz)。
- * 2M PHY 占 ch±1，仍留保护带。
- * 注：原实现是 channel = gServerData & 0x3F（纯随机），会随机撞上 WiFi；
- *     信道由**主机**下发，所以改这张表只需重编主机，从机自动跟随。 */
-#define  CH_HOP_TBL_LEN  4
-#define  CH_HOP_TBL      { 24, 49, 25, 50 }
+ *   WiFi ch11=2462MHz 占 2452~2472 → 本芯片 ch52~72
+ * 所以 ch73 以上才是真正"头顶没有 WiFi"的一段，取 ch74/76/78(2474/2476/2478MHz)：
+ *   下距 WiFi ch11 边缘(2472MHz) 2MHz，上距 BLE 广播信道 39(2480MHz) 2MHz，
+ *   距 2.4G 上限(2483.5MHz) 5MHz；2M PHY 占 ch±1，两侧都留出保护带。
+ * 注：先前用过 {24,49,25,50}（WiFi 缝隙中心），实测仍会被 WiFi 邻道泄漏影响，
+ *     故改用 WiFi 频段之上的这一段。
+ *     信道由**主机**下发，改这张表只需重编主机，从机自动跟随。 */
+#define  CH_HOP_TBL_LEN  3
+#define  CH_HOP_TBL      { 74, 76, 78 }
 #define  TEST_PHY_MODE   PHY_MODE_PHY_2M
 
 #if(TEST_PHY_MODE == PHY_MODE_2G4 )
