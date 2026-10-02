@@ -316,7 +316,7 @@ CH570 的 ROM 在**上电/复位那一刻**检测 ISP 握手数据，因此：
 | 项 | 说明 |
 |---|---|
 | 串口连接 | USB 转串口接到 CH570 的 ISP 串口，**电平 3.3V** |
-| 映射进 WSL | 见 [wsl-usbip.md](./wsl-usbip.md)，映射后形如 `/dev/ttyUSB0` |
+| 映射进 WSL | 见 [wsl-usbip.md](./wsl-usbip.md)。**注意 CH343 会枚举成 `/dev/ttyACM0`**（CDC-ACM 类），不是 `/dev/ttyUSB*`（那是 CH340/CP210x 之类）；用 `ls /dev/ttyUSB* /dev/ttyACM*` 确认 |
 | `Config.ini` | **必须用 Windows 版 `WchIspStudio.exe`** 的「文件→保存配置」生成（[下载](https://www.wch.cn/downloads/WCHISPTool_Setup_exe.html)，选型要有 CH570） |
 | 工具 | 见下方编译命令（官方预编译版要求 glibc ≥ 2.33，Ubuntu 20.04 跑不了） |
 
@@ -346,7 +346,17 @@ sudo ~/.local/bin/WCHISPTool_CMD -p /dev/ttyISP0 -b 115200 \
      -c Config.ini -o program -f RF_Uart/build/RF_Uart.hex
 ```
 
-### 11.4 参数与状态码
+### 11.4 实测要点（本机验证）
+
+- **`Config.ini` 是必需品**：连 `-v boot` 这种只读查询都会因缺配置而失败，报
+  `read configuration file or set isp option to device error`
+- **`-v` 必须带参数**：`-v tool`（打印工具版本，不需要设备）或 `-v boot`（需 MCU 在 BOOT 模式）
+- ⚠️ **失败时退出码也可能是 0**（实测 `-v boot` 失败仍返回 0）—— 判断成败要看它打印的 JSON：
+  `{"Device":"...","Status":"Fail","Code":N,"Message":"..."}`，而不是看返回码
+- CH343 在 WSL 里枚举为 `/dev/ttyACM0`；脚本会把它软链成工具要求的 `/dev/ttyISP0`
+- 本机实测：工具版本 V3.70，`-v tool` 正常 → 工具与串口打开均通
+
+### 11.5 参数与状态码
 
 | 参数 | 含义 |
 |---|---|
