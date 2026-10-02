@@ -43,7 +43,7 @@ extern "C"
  *   1 = 收到/发出数据时让 LED 亮 LED_DATA_PULSE_MS 毫秒（肉眼可见的闪一下）
  *   0 = 不提示，连接成功后 LED 保持熄灭 */
 #define    LED_DATA_BLINK    1
-#define    LED_DATA_PULSE_MS 30
+#define    LED_DATA_PULSE_MS 80
 
 /* 连接状态去抖时间（毫秒）：连上立即生效；断开要持续这么久才认定断开。
  * 用来抑制信号临界值时的抖动 —— 否则 USB 会反复枚举（PC 上设备反复插拔）。 */

@@ -146,6 +146,11 @@ static void rfProcessRx( rfPackage_t *pPkt )
         if( pPkt->type == PKT_DATA_RSP_ACK )
         {
             // 数据发送成功
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+            /* 下行数据有两条捎带路径（本包 / PKT_CMD_RSP_STATUS），这里补上本包这一条，
+             * 否则"数据收到了但灯不闪" —— 因为主机看从机当时在发什么来选择捎带路径 */
+            LedDataPulse( );
+#endif
             if( pPkt->length > PKT_DATA_OFFSET+1 )
             {
                 typeBufSize len;

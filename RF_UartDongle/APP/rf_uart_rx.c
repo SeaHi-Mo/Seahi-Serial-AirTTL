@@ -211,7 +211,13 @@ static void rfProcessRx( rfPackage_t *pPkt )
                     pPkt_t->seq = gDataSeq;
                     pPkt_t->resv = 0;
                     pRsp_t->accessaddr = rf_rand_aa( gServerData );
-                    pRsp_t->channel = gServerData&0x3F;
+                    {
+                        /* 不再拿随机数低 6 位当频点（会随机撞 WiFi ch1/6/11），
+                         * 改为从候选表里挑，见 rf.h 的 CH_HOP_TBL 说明。
+                         * 仍用 gServerData 取模，保持"每次配对换个频点"的随机性。 */
+                        static const uint8_t chHopTbl[CH_HOP_TBL_LEN] = CH_HOP_TBL;
+                        pRsp_t->channel = chHopTbl[ gServerData % CH_HOP_TBL_LEN ];
+                    }
                     pRsp_t->phy = CONN_PHY_TYPE; // 2M
                     pRsp_t->severData = gServerData;
                     pRsp_t->interval = CONN_INTERVAL;

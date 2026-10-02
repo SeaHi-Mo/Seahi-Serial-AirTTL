@@ -18,6 +18,18 @@ extern "C"
 #include "buf.h"
 
 #define  DEF_FREQUENCY   17              // 通信频点
+
+/* 绑定后使用的通信频点候选表 —— 避开 WiFi 2.4G 的 ch1/ch6/ch11 占用区。
+ * 按 f = 2400 + ch (MHz) 换算：
+ *   WiFi ch1 =2412MHz 占 2402~2422 → 本芯片 ch2~22
+ *   WiFi ch6 =2437MHz 占 2427~2447 → 本芯片 ch27~47
+ *   WiFi ch11=2462MHz 占 2452~2472 → 本芯片 ch52~72（本芯片可用到 63）
+ * 故取两处缝隙的中心：ch24/25(2424/2425MHz) 与 ch49/50(2449/2450MHz)。
+ * 2M PHY 占 ch±1，仍留保护带。
+ * 注：原实现是 channel = gServerData & 0x3F（纯随机），会随机撞上 WiFi；
+ *     信道由**主机**下发，所以改这张表只需重编主机，从机自动跟随。 */
+#define  CH_HOP_TBL_LEN  4
+#define  CH_HOP_TBL      { 24, 49, 25, 50 }
 #define  TEST_PHY_MODE   PHY_MODE_PHY_2M
 
 #if(TEST_PHY_MODE == PHY_MODE_2G4 )
