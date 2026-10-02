@@ -77,30 +77,30 @@ R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN;
 
 必须是**含 `wlinke` 驱动的 WCH 定制版 OpenOCD** —— 发行版仓库里的 `openocd` **没有这个驱动**，装了也用不了。
 
-**这是"用现成工具"，不需要自己编译。** 本项目**自带一份**（`tools/openocd` 子模块），`scripts/flash.sh` 会按下面的优先级自动挑选：
+**这是"用现成工具"，不需要自己编译。** ⚠️ **本项目已不再自带 OpenOCD**（原先的 `tools/openocd` 子模块已移除，以缩减仓库体积），
+需要你自行准备一份，`scripts/flash.sh` 会按下面的优先级自动挑选：
 
 | 优先级 | 来源 | 路径 |
 |---|---|---|
-| **①（推荐）** | **项目自带子模块** | `tools/openocd/bin/openocd` |
+| **①（推荐）** | **独立仓库下载** | [SeaHi-Mo/wch-openocd-linux-x64](https://github.com/SeaHi-Mo/wch-openocd-linux-x64)，clone 后用 `OPENOCD_BIN` 指定 |
 | ② | PATH 里的 `openocd` | 会**校验它是否真带 `wlinke`**，发行版自带的（0.10）不合格会被自动跳过 |
-| ③ | 系统已装的 WCH 定制版 | `/usr/local/bin/openocd`（本机即如此） |
-| ④ | 安信可 FlashKey 编译的 Linux 版 | 随其 `flashkey-mcp` 包分发，本机示例：`~/.local/venvs/flashkey-mcp/lib/python3.11/site-packages/flashkey_mcp/openocd/bin/linux-x64/openocd` |
+| ③ | 系统已装的 WCH 定制版 | `/usr/local/bin/openocd` |
+| ④ | 安信可 FlashKey 编译的 Linux 版 | 随其 `flashkey-mcp` 包分发，示例：`~/.local/venvs/flashkey-mcp/lib/python3.11/site-packages/flashkey_mcp/openocd/bin/linux-x64/openocd` |
 | ⑤ | MounRiver Studio 自带的 | `$MRS_HOME/toolchain/OpenOCD/bin/openocd` |
 
-项目自带那份的获取方式：
+**获取方式**：
 
 ```bash
-git clone --recurse-submodules <本仓库>
-# 已克隆过的补拉：
-git submodule update --init tools/openocd
+git clone https://github.com/SeaHi-Mo/wch-openocd-linux-x64.git
+export OPENOCD_BIN="$PWD/wch-openocd-linux-x64/bin/openocd"
 ```
 
-> **这份 Linux 版的来历（已核实）**：由安信可 **FlashKey** 项目编译（WCH OpenOCD v1.6 / OpenOCD 0.11.0 分支，含 `wlinke` 驱动与 SDI 传输），现独立托管于
+> **这份 Linux 版的来历（已核实）**：由安信可 **FlashKey** 项目编译（WCH OpenOCD v1.6 / OpenOCD 0.11.0 分支，含 `wlinke` 驱动与 SDI 传输），托管于
 > [`SeaHi-Mo/wch-openocd-linux-x64`](https://github.com/SeaHi-Mo/wch-openocd-linux-x64)，并附 `NOTICE-OPENOCD.md` 做 GPL-2.0 合规声明。
-> **本机 `/usr/local/bin/openocd` 与它 MD5 完全相同**（`b7e652aa…`）—— 你现在用的烧录器就是它。
+> **该仓库就是原先 `tools/openocd` 子模块的上游** —— 子模块移除后从这里取，内容完全一样。
 >
 > 沁恒与社区的同类仓库（`openwch/openocd_wch`、`cjacker/wch-openocd`、`fxsheep/openocd_wchlink-rv`）**都只有源码**、无 Linux 预编译包，
-> 所以本项目把构建产物单独托管，才能做到"clone 即用"。
+> 所以上游把构建产物单独托管。
 
 **怎么判断能不能用**：能加载 `wch-riscv.cfg` 而**不报** `unknown adapter`（即已编入 `wlinke` 驱动）。`scripts/flash.sh` 会自动做这个校验。
 

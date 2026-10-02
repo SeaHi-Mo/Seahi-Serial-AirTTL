@@ -447,7 +447,7 @@ git tag -a v0.1.1 -m "..." && git push origin v0.1.1
 | [wch-stdperiph-api.md](./references/wch-stdperiph-api.md) | 沁恒**标准外设库** API：CLK / GPIO / UART / Flash / SYS / TMR / PWM / SPI / I2C / PWR / USB设备 / USB主机 / CMP / KeyScan / ISP | 配引脚、设时钟、读写 Flash、开关中断 |
 | [rf-stack-api.md](./references/rf-stack-api.md) | 沁恒 **2.4G 协议栈**（`CH572rf.h`）+ **RISC-V 内核层**（`core_riscv.h`）：`RFRole_*` / `RFIP_*`、CSR 操作、`PFIC_*` 中断控制、`__MCPY` 等 xw 扩展、`__HIGH_CODE` | 调射频参数、写中断、理解 `.highcode` |
 | [chip-spec.md](./references/chip-spec.md) | **CH570Q 芯片规格**：系列差异、内核/存储与地址映射、外设基址、CH570Q 引脚表、PA0/PA1 调试口约束、复位脚可选 PA7/PA8、电气与低功耗参数、2.4G 射频参数 | 查硬件规格、核对接线、调低功耗 |
-| [flashing.md](./references/flashing.md) | **烧录与调试指南**：项目自带 `tools/openocd` 子模块（clone 即用）、各烧录模式、解除读保护、别擦掉绑定信息、GDB 调试、验证状态 | 烧写、排查烧录问题 |
+| [flashing.md](./references/flashing.md) | **烧录与调试指南**：如何准备 WCH 定制版 OpenOCD（**已不随仓库分发**，见独立仓库）、各烧录模式、解除读保护、别擦掉绑定信息、GDB 调试、验证状态 | 烧写、排查烧录问题 |
 | [wsl-usbip.md](./references/wsl-usbip.md) | **WSL 下把 WCH-LinkE 映射进来**：usbipd `bind`/`attach` 全流程、`vhci_hcd` 与 `usbip` 版本不匹配的坑、无 sudo 密码时的免密提权、`LIBUSB_ERROR_ACCESS` 的 udev 权限修复、重启后自动化、排错对照（**本机实测**） | 在 WSL 里烧录/调试、WSL 里看不到 WCH-Link |
 | [resources.md](./references/resources.md) | 数据手册、工具链、烧写调试工具、外部资料入口 | 查手册、找工具 |
 

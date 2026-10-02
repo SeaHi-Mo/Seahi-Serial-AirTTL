@@ -211,5 +211,5 @@ Start-Process usbipd -Verb RunAs -ArgumentList 'bind','--busid','9-1'
 | Windows 侧 | `usbipd-win` **5.2.0** |
 | 设备 | `9-1  1a86:8010  WCH-LinkRV, WCH-Link SERIAL (COM5)` |
 | 映射结果 | ✅ WSL `lsusb` 见 `1a86:8010 QinHeng Electronics WCH-Link`；`/dev/ttyACM0` 出现；vhci 端口 `sta=006` |
-| OpenOCD | ✅ `tools/openocd/bin/openocd` 认到 `WCH-LinkE mode:RV version 2.21` |
+| OpenOCD | ✅ 认到 `WCH-LinkE mode:RV version 2.21`（当时用的是项目自带的 `tools/openocd/bin/openocd`；该子模块**现已移除**，见 [flashing.md](./flashing.md) 3.0） |
 | 待办 | ⚠️ 普通用户跑 OpenOCD 报 `LIBUSB_ERROR_ACCESS`（以 root 正常）→ 需第四节的 udev 规则；目标芯片尚未连上（属预期） |

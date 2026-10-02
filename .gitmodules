@@ -1,6 +1,3 @@
 [submodule "tools/toolchain"]
 	path = tools/toolchain
 	url = https://github.com/SeaHi-Mo/riscv-gun-toolchain-12.2.0-x86_64-linux-riscv-wch-elf.git
-[submodule "tools/openocd"]
-	path = tools/openocd
-	url = https://github.com/SeaHi-Mo/wch-openocd-linux-x64.git
