@@ -1,3 +1,6 @@
 [submodule "tools/toolchain"]
 	path = tools/toolchain
 	url = https://github.com/SeaHi-Mo/riscv-gun-toolchain-12.2.0-x86_64-linux-riscv-wch-elf.git
+[submodule "tools/wchisptool"]
+	path = tools/wchisptool
+	url = https://github.com/SeaHi-Mo/WCHISPTool_CMD-for-Linux.git
