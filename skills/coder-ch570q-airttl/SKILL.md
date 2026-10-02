@@ -352,7 +352,11 @@ cd ../RF_UartDongle && cmake -B build -G "Unix Makefiles" && cmake --build build
 **完整烧录指南见 [references/flashing.md](./references/flashing.md)** —— 含"该用哪份 OpenOCD"、各烧录模式（普通 / 擦除重写 / 解除读保护 / 全片擦除）、**别擦掉从机绑定信息**，以及验证状态说明。最常用的一条命令：
 
 ```bash
-# skill 自带脚本：自动查找 OpenOCD 与 wch-riscv.cfg，烧录 + 校验 + 复位
+# ★ 推荐：ISP 串口烧录（不依赖 WCH-Link，绕开"固件关了 PA0/PA1 调试口"的坑）
+#   -w 10 = 等待 10 秒，期间给 MCU 上电（BOOT 检测发生在上电瞬间）
+skills/coder-ch570q-airttl/scripts/isp-flash.sh -c ~/Config.ini -f RF_Uart/build/RF_Uart.hex -w 10
+
+# OpenOCD 路线（实测难连，见 flashing.md 第十一节）：自动查找 OpenOCD 与 wch-riscv.cfg
 skills/coder-ch570q-airttl/scripts/flash.sh RF_Uart/build/RF_Uart.hex
 skills/coder-ch570q-airttl/scripts/flash.sh RF_UartDongle/build/RF_UartDongle.hex
 

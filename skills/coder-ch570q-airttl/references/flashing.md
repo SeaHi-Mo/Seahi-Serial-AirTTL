@@ -71,7 +71,12 @@ R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN;
 
 ---
 
-## 三、方法一：OpenOCD 命令行（Linux，推荐）
+## 三、方法一：OpenOCD 命令行（Linux）
+
+> ⚠️ **实测提醒**：本项目两块板启动后都会关闭两线调试口（PA0/PA1），
+> 只剩"上电瞬间"的极窄窗口，而 OpenOCD 每次运行都要重新枚举 + 握手，**基本抓不到**。
+> 建议优先用 **[第十一节：ISP 烧录（串口）](#十一方法五isp-烧录串口推荐)**
+> 或 **[第五节：MounRiver Studio](#五方法三mounriver-studio图形界面最省事)**。
 
 ### 3.0 先确认手上有一份能用的 openocd
 
@@ -285,3 +290,82 @@ skills/coder-ch570q-airttl/scripts/flash.sh RF_UartDongle/build/RF_UartDongle.he
 
 # 4) 首次配对：把两块板贴近，上电；从机串口出现 "bound success." 即成功
 ```
+
+
+---
+
+## 十一、方法五：ISP 烧录（串口，**推荐**）
+
+> **为什么推荐**：CH570Q 的两线调试口就是 **PA0/PA1**，而两个固件启动后都会执行
+> `R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN` 把它关掉（从机是为了把 PA0/PA1 让给 UART）。
+> 于是固件一跑起来 WCH-Link 就连不上，只剩"上电瞬间"的极窄窗口；OpenOCD 每次运行
+> 都要重新枚举 + 握手，实测基本抓不到。**ISP 走片内 ROM bootloader
+> （`BOOT_LOAD_ADDR = 0x3C000`，8KB），完全不碰调试口**，所以稳定得多。
+
+### 11.1 关键：BOOT 模式是「上电瞬间检测」
+
+CH570 的 ROM 在**上电/复位那一刻**检测 ISP 握手数据，因此：
+
+- **工具必须先开始发数据，MCU 后上电** —— 顺序反了就进不去 bootloader
+- `WCHISPTool_CMD` 只枚举一次就退出（源码里 `WCH55x_EnumDevices()` 没有等待循环），
+  所以要用脚本的 **`-w` 等待模式**：脚本反复调用工具，你在这段时间给 MCU 上电
+- **不需要跳线或按键**（这点和多数 MCU 的"BOOT 引脚"不同）
+
+### 11.2 准备
+
+| 项 | 说明 |
+|---|---|
+| 串口连接 | USB 转串口接到 CH570 的 ISP 串口，**电平 3.3V** |
+| 映射进 WSL | 见 [wsl-usbip.md](./wsl-usbip.md)，映射后形如 `/dev/ttyUSB0` |
+| `Config.ini` | **必须用 Windows 版 `WchIspStudio.exe`** 的「文件→保存配置」生成（[下载](https://www.wch.cn/downloads/WCHISPTool_Setup_exe.html)，选型要有 CH570） |
+| 工具 | 见下方编译命令（官方预编译版要求 glibc ≥ 2.33，Ubuntu 20.04 跑不了） |
+
+```bash
+# 编译出本机可用的 WCHISPTool_CMD（源码 + 静态库都在子模块里）
+cd tools/wchisptool
+g++ src/IspCmdTool.cpp -I lib/x64/dynamic \
+    -o ~/.local/bin/WCHISPTool_CMD \
+    lib/x64/static/libwch55xisp-4.0.0.a -lpthread
+```
+
+### 11.3 烧录
+
+```bash
+# 脚本方式（推荐）：-w 10 = 等待 10 秒，期间给 MCU 上电
+skills/coder-ch570q-airttl/scripts/isp-flash.sh -c ~/Config.ini -f RF_Uart/build/RF_Uart.hex -w 10
+
+# 只校验
+skills/coder-ch570q-airttl/scripts/isp-flash.sh -c ~/Config.ini -f RF_Uart/build/RF_Uart.hex -o verify -w 10
+```
+
+等价的手工命令：
+
+```bash
+sudo ln -sfn /dev/ttyUSB0 /dev/ttyISP0        # 工具要求设备名叫 ttyISPx
+sudo ~/.local/bin/WCHISPTool_CMD -p /dev/ttyISP0 -b 115200 \
+     -c Config.ini -o program -f RF_Uart/build/RF_Uart.hex
+```
+
+### 11.4 参数与状态码
+
+| 参数 | 含义 |
+|---|---|
+| `-p` | 设备：USB 用 `/dev/ch37x`；串口用 `/dev/ttyISPx` |
+| `-b` | 串口波特率（115200 / 230400 …） |
+| `-v` | 打印 boot / 工具版本 |
+| `-c` | `Config.ini` |
+| `-o` | `program` 下载 / `verify` 校验 |
+| `-f` | `xxx.hex` 或 `xxx.bin` |
+| `-r` | 下载前先解除代码保护 |
+
+| 状态码 | 含义 |
+|---|---|
+| 0 | 成功 |
+| 4 | 串口名称无效 |
+| 5 | **未枚举到设备** —— 多半是没在等待窗口内上电 |
+| 6 | 芯片类型与 `Config.ini` 不符 |
+| 13 / 14 | 下载失败 / 校验失败 |
+
+> **WSL 里只有串口方式可行**：USB 方式（`/dev/ch37x`）需要 `ch37x.ko` 内核模块，
+> 而 WSL2 是定制内核、没有 `/lib/modules/$(uname -r)/build`，编不出模块。
+> Windows 侧则两种都行（官方驱动现成）。

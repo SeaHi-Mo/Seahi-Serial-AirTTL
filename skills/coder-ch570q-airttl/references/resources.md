@@ -70,7 +70,10 @@ D:\Users\Seahi\Desktop\项目文档\立创电赛\无线串口调试器\CH570Q无
 | **WCH-Link** | 两线调试器，烧写两颗 CH570Q 必需 |
 | WCH-LinkUtility / WCHISPTool | 沁恒官方 Windows 烧写工具（官网下载中心） |
 | **OpenOCD（WCH 定制版）** | **已不再随仓库分发**（原 `tools/openocd` 子模块已移除）。Linux x64 预编译版（含 `wlinke` 驱动 + `wch-riscv.cfg`）从这里取：https://github.com/SeaHi-Mo/wch-openocd-linux-x64 |
-| 烧录脚本 | `skills/coder-ch570q-airttl/scripts/flash.sh` —— 自动挑选可用的 openocd 与 `wch-riscv.cfg`，支持烧录/校验/解锁/擦除/复位 |
+| 烧录脚本（ISP，推荐） | `skills/coder-ch570q-airttl/scripts/isp-flash.sh` —— 串口 ISP 烧录（`-w` 等待上电窗口），不依赖 WCH-Link |
+| WCHISPTool_CMD | ISP 命令行工具，子模块 `tools/wchisptool`（源码 + 各架构预编译）；官方预编译版需 glibc ≥ 2.33，20.04 需自行编译 |
+| Windows 版 ISP 工具 | https://www.wch.cn/downloads/WCHISPTool_Setup_exe.html —— 图形界面，也是生成 `Config.ini` 的唯一途径 |
+| 烧录脚本（OpenOCD） | `skills/coder-ch570q-airttl/scripts/flash.sh` —— 自动挑选可用的 openocd 与 `wch-riscv.cfg`；**实测难连**，见 flashing.md 第十一节 |
 | 仓库内 GDB | `tools/toolchain/bin/riscv-wch-elf-gdb` |
 
 > **从机固件运行时会关闭两线调试**（`R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN`，为复用 PA2/PA3 给串口/一键下载）。下载失败先给板子**断电重上电**。
