@@ -751,6 +751,20 @@ static void __attribute__((noinline)) rfBootCountStartup( void )
         /* 连续快速重启达到阈值 → 解绑：清掉绑定信息并把计数归零 */
         PRINT("reboot %d times -> unbind.\n", bootCnt + 1);
         gServerData = 0;
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+        /* 解绑瞬间快闪 3 次：让用户能确认"解绑真的发生了"。
+         * 从机 DEBUG 默认关闭，否则只能靠主机日志的 serverData 变化间接判断。 */
+        {
+            uint8_t k;
+            for( k = 0; k < 3; k++ )
+            {
+                GPIOA_SetBits( LED_PIN );
+                mDelaymS( 100 );
+                GPIOA_ResetBits( LED_PIN );
+                mDelaymS( 100 );
+            }
+        }
+#endif
         info.head       = 0;
         info.serverData = 0;
         info.bootCount  = 0;

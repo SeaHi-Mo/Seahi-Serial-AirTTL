@@ -29,7 +29,10 @@ extern "C"
  * 由主循环把计数清零。于是只有"上电后很快又断电"才会累积，
  * 累计到 BOOT_UNBIND_TIMES 次 → 清除绑定信息（解绑）。 */
 #define  BOOT_UNBIND_TIMES      5
-#define  BOOT_FAST_RESET_SEC    5
+#define  BOOT_FAST_RESET_SEC    15    /* 上电后跑满该秒数即视为"正常启动"并清零计数；
+                                        * 取 15s 是实测校准：启动约 1.5s + LED 慢闪(0.7s/次)
+                                        * 判断并断电，5s 窗口太窄会把操作难度拉满、
+                                        * 一旦超时就清零导致前面几次重启全白做。 */
 
 extern uint32_t  gRfRxFlag;
 extern struct simple_buf *pRfBuf;
