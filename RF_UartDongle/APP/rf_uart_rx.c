@@ -181,6 +181,8 @@ static void rf_bound( bound_rsp_t *rsp )
     rf_rx_set_phy_type( rsp->phy );
     RF_bound_Flag = 1;
     PRINT("bound success.%X %x\n",rsp->accessaddr,rsp->channel );
+    /* 建链成功才持久化：此时采用的 serverData 与从机保存的必然一致 */
+    rfSaveServerData( );
 }
 
 /*******************************************************************************
@@ -242,7 +244,11 @@ static void rfProcessRx( rfPackage_t *pPkt )
                     // 生成下次回连的随机信息
                     gDataSeq = 0;
                     gServerData = rf_rand16( rssi );
-                    rfSaveServerData( );     /* 持久化绑定：掉电/断开后仍只认本机 */
+                    /* 【注意】不在此处保存！配对阶段从机会反复广播请求，这里每应答
+                     * 一次就生成新值并覆盖 Flash，而主机最终保存的是"最后一次"、
+                     * 从机保存的却可能是"更早某一次"，导致两边绑定值不同 -> 永久
+                     * reject（实测 local=a33a / remote=c242）。持久化改到
+                     * rf_bound()：只有真正建链成功那一刻才落盘。 */
                     pPkt_t->type = PKT_CMD_BOUND_RSP;
                     pPkt_t->length = PKT_DATA_OFFSET+sizeof(bound_rsp_t);
                     pPkt_t->seq = gDataSeq;
