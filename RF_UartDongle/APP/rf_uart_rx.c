@@ -267,7 +267,10 @@ static void rfProcessRx( rfPackage_t *pPkt )
                 }
                 else
                 {
-                    PRINT(" reject..\n");
+                    PRINT(" reject.. local=%x remote=%x\n", gServerData, pReq_t->severData);
+                    /* local = 本机记录的绑定；remote = 从机带来的绑定。
+                     * 两者不等且 remote != 0 → 严格绑定生效（拒绝），RSSI 不参与判断；
+                     * remote == 0 才是"从机未绑定"（走上面的 RSSI 首次配对分支）。 */
                 }
                 PRINT( "rssi=%d \n",rssi);
             }
