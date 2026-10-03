@@ -14,6 +14,7 @@
 #include "rf.h"
 #include "rf_uart_rx.h"
 #include "usb_uart.h"
+#include "ISP572.h"          /* FLASH_ROM_ERASE / FLASH_ROM_WRITE：绑定信息持久化 */
 
 
 uint8_t volatile RF_bound_Flag;
@@ -31,7 +32,34 @@ rfTxBuf_t gTxBuf;
 uint32_t gSysClock;
 uint32_t gRfTxCount;
 uint32_t gIntervalTimer;
-uint16_t gServerData; // 需要掉电保存，需保存至flash
+uint16_t gServerData; // 掉电保存至 flash（rfLoad/saveServerData 实现）
+
+/* ---- 绑定信息持久化（严格绑定所需）----------------------------------------
+ * 主机必须记住"自己绑的是哪台从机"，否则：重启后归零、断开连接也被清零，
+ * 任何从机/任何主机都能重新接上，"绑定"就失去互斥意义。
+ * ★ Flash 擦写期间 CPU 取指受影响，操作代码必须放 RAM（.high_code）执行。 */
+#define  BOUND_INFO_FLASH_ADDR   (1024*236)
+
+__HIGH_CODE
+static void rfSaveServerData( void )
+{
+    rfBoundInfo_t info;
+
+    info.head       = 0x55aa;
+    info.serverData = gServerData;
+    info.bootCount  = 0;
+    info.resv       = 0;
+    FLASH_ROM_ERASE( BOUND_INFO_FLASH_ADDR, 4096 );
+    FLASH_ROM_WRITE( BOUND_INFO_FLASH_ADDR, &info, sizeof(info) );
+}
+
+static void rfLoadServerData( void )
+{
+    rfBoundInfo_t *pInfo = (rfBoundInfo_t *)(BOUND_INFO_FLASH_ADDR);
+
+    gServerData = ( pInfo->head == BOUND_INFO_HEAD ) ? pInfo->serverData : 0;
+    PRINT("load serverData = %x\n", gServerData);
+}
 uint16_t gTimeoutMax;
 uint16_t gTimeout;
 
@@ -127,7 +155,8 @@ static void rf_disconnect( void )
     rf_rx_set_sync_word( AA );
     rf_rx_set_frequency( DEF_FREQUENCY );
     gRfStatus = RF_STATUS_WAIT;
-    gServerData = 0;
+    /* 【注意】此处不能清 gServerData：断开连接 != 解除绑定。
+     * 之前每次断开都清零，主机一掉线就"失忆"，任何从机都能重新接上。 */
 }
 
 /*******************************************************************************
@@ -181,8 +210,11 @@ static void rfProcessRx( rfPackage_t *pPkt )
                 // 非第一次连接，地址匹配可连
                 if( pReq_t->severData )
                 {
-                    // 信息匹配，或者dongle重新上电了
-                    if( !gServerData || pReq_t->severData == gServerData )
+                    /* 【严格绑定】必须与本机记录的 serverData 完全一致才接受。
+                         * 原实现为 `!gServerData || 相等`，即"本机未绑定就无条件接受"，
+                         * 导致任何一台新主机都能接住已绑定的从机。主机绑定已持久化，
+                         * 所以去掉该分支不会造成"主机重启后连不上自己的从机"。 */
+                    if( pReq_t->severData == gServerData )
                     {
                         reg = 1;
                     }
@@ -209,6 +241,7 @@ static void rfProcessRx( rfPackage_t *pPkt )
                     // 生成下次回连的随机信息
                     gDataSeq = 0;
                     gServerData = rf_rand16( rssi );
+                    rfSaveServerData( );     /* 持久化绑定：掉电/断开后仍只认本机 */
                     pPkt_t->type = PKT_CMD_BOUND_RSP;
                     pPkt_t->length = PKT_DATA_OFFSET+sizeof(bound_rsp_t);
                     pPkt_t->seq = gDataSeq;
@@ -666,7 +699,7 @@ void RF_UartRxInit( void )
     gRxDataStatus = DATA_STATUS_IDLE;
     rf_buffer_create(&pRfBuf);
     gDataSeq = 0;
-    gServerData = 0;
+    rfLoadServerData( );             /* 从 Flash 读回绑定（严格绑定） */
     gBoundStatus = BOUND_STATUS_IDLE;
     gTxBuf.status = 0;
     gIntervalTimer = CONN_INTERVAL*1000;
