@@ -351,10 +351,16 @@ cd ../RF_UartDongle && cmake -B build -G "Unix Makefiles" && cmake --build build
 
 **完整烧录指南见 [references/flashing.md](./references/flashing.md)** —— 含"该用哪份 OpenOCD"、各烧录模式（普通 / 擦除重写 / 解除读保护 / 全片擦除）、**别擦掉从机绑定信息**，以及验证状态说明。最常用的一条命令：
 
+> ⚠️ **ISP 烧录的接线是「同名相接」，反直觉**：**CH570 的 TXD 接 TTL 的 TXD**、
+> **RXD 接 RXD**（**不是**通常的"TX↔RX 交叉"）。实测只有这种接法才烧得进去；
+> 而正常透传/通信时仍是交叉接（从机 `PA0=TXD` 接目标板 RX）。
+
 ```bash
 # ★ 推荐：ISP 串口烧录（不依赖 WCH-Link，绕开"固件关了 PA0/PA1 调试口"的坑）
 #   -w 10 = 等待 10 秒，期间给 MCU 上电（BOOT 检测发生在上电瞬间）
-skills/coder-ch570q-airttl/scripts/isp-flash.sh -c ~/Config.ini -f RF_Uart/build/RF_Uart.hex -w 10
+#   Config.ini 用 skill 自带的那份（固件由 -f 指定，从机/主机通用）
+CFG=skills/coder-ch570q-airttl/scripts/Config.ini
+skills/coder-ch570q-airttl/scripts/isp-flash.sh -c "$CFG" -f RF_Uart/build/RF_Uart.hex -w 10
 
 # OpenOCD 路线（实测难连，见 flashing.md 第十一节）：自动查找 OpenOCD 与 wch-riscv.cfg
 skills/coder-ch570q-airttl/scripts/flash.sh RF_Uart/build/RF_Uart.hex
