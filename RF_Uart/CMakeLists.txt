@@ -132,6 +132,18 @@ else()
     set(_ISP_CONFIG_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/../skills/coder-ch570q-airttl/scripts/Config.ini")
 endif()
 set(ISP_CONFIG "${_ISP_CONFIG_DEFAULT}" CACHE FILEPATH "ISP Config.ini（默认用工程自带）")
+
+# 迁移：早期版本把 ISP_CONFIG 默认成了 skill 里那份模板，老 build 目录会残留该路径，
+# 而 CACHE 变量不会因为改了默认值就自动更新 —— 若它仍指向 skill 模板且工程内已有，
+# 就自动切到工程自带的那份（用户显式指定过其它路径则不动）。
+get_filename_component(_ISP_CFG_REAL "${ISP_CONFIG}" REALPATH)
+get_filename_component(_ISP_TPL_REAL "${CMAKE_CURRENT_SOURCE_DIR}/../skills/coder-ch570q-airttl/scripts/Config.ini" REALPATH)
+if(_ISP_CFG_REAL STREQUAL _ISP_TPL_REAL
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/Config.ini")
+    set(ISP_CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/Config.ini"
+        CACHE FILEPATH "ISP Config.ini（默认用工程自带）" FORCE)
+    message(STATUS "ISP: ISP_CONFIG 已从 skill 模板迁移为工程自带 -> ${ISP_CONFIG}")
+endif()
 set(ISP_PORT ""          CACHE STRING "ISP 串口设备；留空=由脚本自动查找（推荐）。\n                                        此处填**实际**串口（如 /dev/ttyACM0）；\n                                        工具要求的 ttyISPx 软链由脚本负责建立")
 set(ISP_WAIT "15"           CACHE STRING "等待目标板上电的秒数")
 set(ISP_BAUD "115200"       CACHE STRING "ISP 波特率")
