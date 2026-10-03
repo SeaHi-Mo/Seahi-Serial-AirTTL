@@ -351,26 +351,14 @@ cd ../RF_UartDongle && cmake -B build -G "Unix Makefiles" && cmake --build build
 
 **完整烧录指南见 [references/flashing.md](./references/flashing.md)** —— 含"该用哪份 OpenOCD"、各烧录模式（普通 / 擦除重写 / 解除读保护 / 全片擦除）、**别擦掉从机绑定信息**，以及验证状态说明。最常用的一条命令：
 
-> ⚠️ **ISP 烧录的接线是「同名相接」，反直觉**：**CH570 的 TXD 接 TTL 的 TXD**、
-> **RXD 接 RXD**（**不是**通常的"TX↔RX 交叉"）。实测只有这种接法才烧得进去。
-> **⚠️ 该接法仅在 ISP 烧录时使用**——正常透传/通信时**仍按常规交叉接**
-> （从机 `PA0=TXD` 接目标板 RX、`PA1=RXD` 接目标板 TX），两种场景别搞混。
-
-```bash
-# ★ 推荐：ISP 串口烧录（不依赖 WCH-Link，绕开"固件关了 PA0/PA1 调试口"的坑）
-#   -w 10 = 等待 10 秒，期间给 MCU 上电（BOOT 检测发生在上电瞬间）
-#   Config.ini 用 skill 自带的那份（固件由 -f 指定，从机/主机通用）
-CFG=skills/coder-ch570q-airttl/scripts/Config.ini
-skills/coder-ch570q-airttl/scripts/isp-flash.sh -c "$CFG" -f RF_Uart/build/RF_Uart.hex -w 10
-
-# OpenOCD 路线（实测难连，见 flashing.md 第十一节）：自动查找 OpenOCD 与 wch-riscv.cfg
-skills/coder-ch570q-airttl/scripts/flash.sh RF_Uart/build/RF_Uart.hex
-skills/coder-ch570q-airttl/scripts/flash.sh RF_UartDongle/build/RF_UartDongle.hex
-
-# 连不上时先"停住"芯片；报 flash protected 时解除读保护
-skills/coder-ch570q-airttl/scripts/flash.sh -m reset
-skills/coder-ch570q-airttl/scripts/flash.sh -m unlock-program RF_Uart/build/RF_Uart.hex
-```
+> **烧录方式（本机结论）**：用 **Windows 版 `WchIspStudio.exe`** 烧录 —— 它常驻监听、不用抢上电时机，稳定可靠。
+> WSL 侧的 `WCHISPTool_CMD` 路线（子模块 + `isp-flash.sh`）已**弃用并移除**：官方预编译版要求 glibc ≥ 2.33（本机 2.31），
+> 且命令行工具每次只停留检查约 2 秒、叠加 WSL 的 usbip 延迟后经常错过 BOOT 窗口。
+>
+> ⚠️ **ISP 烧录的接线是「同名相接」，反直觉**：**CH570 的 TXD 接 TTL 的 TXD**、**RXD 接 RXD**
+> （**不是**通常的"TX↔RX 交叉"）。**该接法仅在 ISP 烧录时使用**；正常透传/通信时仍是交叉接
+> （从机 `PA0=TXD` 接目标板 RX、`PA1=RXD` 接目标板 TX）。
+> 另：**不要勾「全片擦除」**——会清掉从机 `0x3B000` 的绑定信息。
 
 ⚠️ **两个前提**：① 两个固件运行后都会**关闭仿真调试接口**（手册 §1.2：PA0/PA1 默认是 SWDIO/SWCLK，不关就用不了串口），连不上时先给目标板**断电重上电**、趁复位瞬间抓；② 从机 PA2/PA3 被"一键下载"占用，烧写前先断开接目标板 RESET/BOOT 的线。
 

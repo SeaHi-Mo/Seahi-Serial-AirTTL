@@ -38,5 +38,3 @@ DEBUG-NOTES.md
 __pycache__/
 *.pyc
 
-# 手动烧录用的工具二进制（编译产物，勿提交）
-WCHISPTool_CMD
