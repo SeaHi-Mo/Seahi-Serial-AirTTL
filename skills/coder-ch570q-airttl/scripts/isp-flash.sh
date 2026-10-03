@@ -170,6 +170,7 @@ echo "▶ 配置    : $CFG"
 echo "▶ 固件    : $FW"
 echo "▶ 操作    : $OP"
 echo "▶ 串口    : $LINK -> $PORT  @$BAUD"
+echo "▶ 提权    : ${SUDO:-（不用 sudo）}"
 echo
 
 # ---------- 执行 ----------
