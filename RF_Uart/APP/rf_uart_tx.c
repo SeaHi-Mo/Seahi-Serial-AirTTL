@@ -36,6 +36,7 @@ rfPackage_t *pPkt_t;
 
 static void rfProcessRx( rfPackage_t *pPkt );
 static void rfProcessTx( void );
+static void rfSaveBoundInfo( rfBoundInfo_t *info );
 static void __attribute__((noinline)) rfBootCountStartup( void );
 static void __attribute__((noinline)) rfBootCountClearTask( void );
 static void rfProcessTimeout( void );
@@ -127,8 +128,7 @@ static void rf_bound( bound_rsp_t *rsp )
     info.serverData = gServerData;
     info.bootCount = 0;                 /* 绑定成功即清零启动计数 */
     info.resv = BOOT_CNT_MAGIC;
-    FLASH_ROM_ERASE( BOUND_INFO_FLASH_ADDR, 4096 );
-    FLASH_ROM_WRITE( BOUND_INFO_FLASH_ADDR,&info,sizeof(info) );
+    rfSaveBoundInfo( &info );
 
     RF_bound_Flag = 1;
     PRINT("bound success.%x %x\n",rsp->accessaddr,rsp->channel );
@@ -670,6 +670,34 @@ void RF_StatusQuery( void )
 
 
 /*******************************************************************************
+ * @fn      rfSaveBoundInfo
+ *
+ * @brief   擦除并写入绑定信息，写后用 FLASH_ROM_VERIFY 校验，失败重试。
+ *
+ *          Flash 写入的硬约束：**源 Buffer 必须在 RAM 且 4 字节对齐**。
+ *          rfBoundInfo_t 已加 aligned(4)；这里再加 VERIFY 兜底，避免出现
+ *          "擦掉了却没写进去"，使 bootCount 永远从 0 开始、解绑阈值达不到。
+ *
+ * @param   info 待写入的绑定信息（RAM，4 字节对齐）
+ * @return  None.
+ */
+static void rfSaveBoundInfo( rfBoundInfo_t *info )
+{
+    int tries;
+
+    for( tries = 0; tries < 3; tries++ )
+    {
+        FLASH_ROM_ERASE( BOUND_INFO_FLASH_ADDR, 4096 );
+        FLASH_ROM_WRITE( BOUND_INFO_FLASH_ADDR, info, sizeof(*info) );
+        if( FLASH_ROM_VERIFY( BOUND_INFO_FLASH_ADDR, info, sizeof(*info) ) == 0 )
+        {
+            break;
+        }
+        PRINT("bound info write retry %d\n", tries + 1);
+    }
+}
+
+/*******************************************************************************
  * @fn      rfBootCountStartup
  *
  * @brief   上电维护「连续快速启动计数」：达到 BOOT_UNBIND_TIMES 次即解绑。
@@ -697,6 +725,23 @@ static void __attribute__((noinline)) rfBootCountStartup( void )
         bootCnt     = 0;
     }
 
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+    /* 【诊断】上电时 LED 快闪 bootCnt 次，肉眼即可确认"有没有从 Flash 读到计数"：
+     *   一次都不闪 = 读到 0（写入失败 / 首启 / 魔数不匹配）
+     *   闪 N 次     = 读到了 N 次连续快速重启
+     * 验证通过后可以删掉这段。 */
+    {
+        uint16_t i;
+        for( i = 0; i < bootCnt; i++ )
+        {
+            GPIOA_SetBits( LED_PIN );
+            mDelaymS( 300 );
+            GPIOA_ResetBits( LED_PIN );
+            mDelaymS( 400 );
+        }
+    }
+#endif
+
     if( (uint16_t)(bootCnt + 1) >= BOOT_UNBIND_TIMES )
     {
         /* 连续快速重启达到阈值 → 解绑：清掉绑定信息并把计数归零 */
@@ -706,8 +751,7 @@ static void __attribute__((noinline)) rfBootCountStartup( void )
         info.serverData = 0;
         info.bootCount  = 0;
         info.resv       = 0;
-        FLASH_ROM_ERASE( BOUND_INFO_FLASH_ADDR, 4096 );
-        FLASH_ROM_WRITE( BOUND_INFO_FLASH_ADDR, &info, sizeof(info) );
+        rfSaveBoundInfo( &info );
         gBootCountPending = 0;
     }
     else
@@ -717,8 +761,7 @@ static void __attribute__((noinline)) rfBootCountStartup( void )
         info.serverData = gServerData;
         info.bootCount  = bootCnt + 1;
         info.resv       = BOOT_CNT_MAGIC;
-        FLASH_ROM_ERASE( BOUND_INFO_FLASH_ADDR, 4096 );
-        FLASH_ROM_WRITE( BOUND_INFO_FLASH_ADDR, &info, sizeof(info) );
+        rfSaveBoundInfo( &info );
         gBootCountPending = 1;
     }
 }
@@ -758,8 +801,7 @@ static void __attribute__((noinline)) rfBootCountClearTask( void )
     info.serverData = gServerData;
     info.bootCount  = 0;
     info.resv       = BOOT_CNT_MAGIC;
-    FLASH_ROM_ERASE( BOUND_INFO_FLASH_ADDR, 4096 );
-    FLASH_ROM_WRITE( BOUND_INFO_FLASH_ADDR, &info, sizeof(info) );
+    rfSaveBoundInfo( &info );
     PRINT("boot counter cleared.\n");
 }
 

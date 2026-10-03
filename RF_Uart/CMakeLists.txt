@@ -114,3 +114,64 @@ COMMAND ${CMAKE_OBJDUMP} ARGS  --source --all-headers --demangle -M xw --line-nu
 COMMAND ${CMAKE_SIZE} ARGS  --format=berkeley "RF_Uart.elf"
 )
 
+# ============================================================================
+# ISP 串口烧录（WCHISPTool_CMD）
+#   cmake --build build --target flash          # 烧录
+#   cmake --build build --target flash-verify   # 只校验
+# 参数（-D 覆盖，如 -DISP_WAIT=30）：
+#   ISP_PORT   串口设备，工具要求设备名为 ttyISPx（默认 /dev/ttyISP0）
+#   ISP_WAIT   等待目标板上电的秒数（BOOT 检测在上电瞬间，默认 15）
+#   ISP_SUDO   1=强制 sudo / 0=不提权 / 不设=自动
+# ============================================================================
+set(ISP_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/../skills/coder-ch570q-airttl/scripts/isp-flash.sh"
+    CACHE FILEPATH "ISP 烧录脚本")
+# Config.ini 优先用工程自带的（工程自包含）；没有才回退到 skill 里的模板
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/Config.ini")
+    set(_ISP_CONFIG_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/Config.ini")
+else()
+    set(_ISP_CONFIG_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/../skills/coder-ch570q-airttl/scripts/Config.ini")
+endif()
+set(ISP_CONFIG "${_ISP_CONFIG_DEFAULT}" CACHE FILEPATH "ISP Config.ini（默认用工程自带）")
+set(ISP_PORT ""          CACHE STRING "ISP 串口设备；留空=由脚本自动查找（推荐）。\n                                        此处填**实际**串口（如 /dev/ttyACM0）；\n                                        工具要求的 ttyISPx 软链由脚本负责建立")
+set(ISP_WAIT "15"           CACHE STRING "等待目标板上电的秒数")
+set(ISP_BAUD "115200"       CACHE STRING "ISP 波特率")
+
+
+# ---- 串口探测（仅在 configure 阶段给提示，便于选择）----
+# ISP_PORT 留空时，烧录阶段由 isp-flash.sh 自己再查一次 /dev/ttyACM* 或 /dev/ttyUSB*，
+# 所以配置时还没插设备也没关系。
+if(NOT ISP_PORT)
+    file(GLOB _isp_ports /dev/ttyACM* /dev/ttyUSB*)
+    if(_isp_ports)
+        message(STATUS "ISP: ISP_PORT 未指定 -> 交由脚本自动查找；当前可见: ${_isp_ports}")
+    else()
+        message(STATUS "ISP: ISP_PORT 未指定 -> 交由脚本自动查找；当前未检测到 /dev/ttyACM* 或 /dev/ttyUSB*")
+    endif()
+endif()
+
+string(REPLACE ".elf" ".hex" ISP_HEX_NAME "${TARGET_ARTIFACT}")
+set(ISP_HEX "${CMAKE_CURRENT_BINARY_DIR}/${ISP_HEX_NAME}")
+
+# 指定了实际串口才传 -p；留空则由脚本自动查找 /dev/ttyACM* 或 /dev/ttyUSB*
+# （若把软链名 /dev/ttyISP0 当实际串口传进来，脚本会跳过建链，工具反而拿不到真设备）
+if(ISP_PORT)
+    set(ISP_PORT_ARG -p "${ISP_PORT}")
+else()
+    set(ISP_PORT_ARG "")
+endif()
+
+add_custom_target(flash
+    COMMAND "${ISP_SCRIPT}" -c "${ISP_CONFIG}" -f "${ISP_HEX}"
+            ${ISP_PORT_ARG} -b "${ISP_BAUD}" -w "${ISP_WAIT}"
+    DEPENDS "${TARGET_ARTIFACT}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    COMMENT "ISP 烧录 ${ISP_HEX_NAME}（等待期内请给目标板上电）"
+    USES_TERMINAL VERBATIM)
+
+add_custom_target(flash-verify
+    COMMAND "${ISP_SCRIPT}" -c "${ISP_CONFIG}" -f "${ISP_HEX}"
+            ${ISP_PORT_ARG} -b "${ISP_BAUD}" -o verify -w "${ISP_WAIT}"
+    DEPENDS "${TARGET_ARTIFACT}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    COMMENT "ISP 校验 ${ISP_HEX_NAME}（等待期内请给目标板上电）"
+    USES_TERMINAL VERBATIM)

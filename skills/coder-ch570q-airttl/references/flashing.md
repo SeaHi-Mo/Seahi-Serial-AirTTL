@@ -318,7 +318,7 @@ CH570 的 ROM 在**上电/复位那一刻**检测 ISP 握手数据，因此：
 | 串口连接 | USB 转串口接到 CH570 的 ISP 串口，**电平 3.3V** |
 | **⚠️ 接线方式（反直觉，务必照做）** | ISP 烧录必须**同名相接**：**CH570 的 TXD ↔ TTL 的 TXD**、**RXD ↔ RXD**。**不是**通常的「TX↔RX 交叉」接法 —— 实测只有同名相接才烧得进去（CH570 的 ROM ISP 握手与常规串口通信的引脚方向不同）。**⚠️ 这种接法仅在 ISP 烧录时使用**：**正常透传/通信时仍是交叉接**（从机 `PA0=TXD` 接目标板 RX、`PA1=RXD` 接目标板 TX），千万别把两种场景搞混 |
 | 映射进 WSL | 见 [wsl-usbip.md](./wsl-usbip.md)。**注意 CH343 会枚举成 `/dev/ttyACM0`**（CDC-ACM 类），不是 `/dev/ttyUSB*`（那是 CH340/CP210x 之类）；用 `ls /dev/ttyUSB* /dev/ttyACM*` 确认 |
-| `Config.ini` | **已随 skill 提供**：[`scripts/Config.ini`](../scripts/Config.ini)（CH570Q/CH570，`IsEraseAllCFlash=0`，因此**不会擦掉从机 `0xF0000` 的绑定信息**）。里面的 `swzUserFile1` 只是占位——**实际固件由命令行的 `-f` 指定**，所以从机/主机通用，不必各改一份。要自行重生成则用 Windows 版 `WchIspStudio.exe` 的「文件→保存配置」（[下载](https://www.wch.cn/downloads/WCHISPTool_Setup_exe.html)） |
+| `Config.ini` | **每个工程各带一份**：`RF_Uart/Config.ini`、`RF_UartDongle/Config.ini`（CH570Q/CH570、`IsEraseAllCFlash=0`，因此**不会擦掉从机 `0xF0000` 的绑定信息**）。其中的 `swzUserFile1` 只是占位——**实际固件由命令行的 `-f` 指定**。skill 里的 [`scripts/Config.ini`](../scripts/Config.ini) 退化为**模板/回退**（工程内缺失时才用）。要自行重生成则用 Windows 版 `WchIspStudio.exe` 的「文件→保存配置」（[下载](https://www.wch.cn/downloads/WCHISPTool_Setup_exe.html)） |
 | 工具 | 本机已有编译好的 **`~/.local/bin/WCHISPTool_CMD`（V3.70，实测 `-v tool` 正常）**，`isp-flash.sh` 会优先找它。子模块里的 `tools/wchisptool/bin/x64/WCHISPTool_CMD` 是官方预编译版，**要求 glibc ≥ 2.33，Ubuntu 20.04 跑不了**（报 `GLIBC_2.33 not found`），必要时按下方命令自行编译 |
 
 ```bash
@@ -330,6 +330,20 @@ g++ src/IspCmdTool.cpp -I lib/x64/dynamic \
 ```
 
 ### 11.3 烧录
+
+**方式 A：CMake target（推荐，编译+烧录一步）**
+
+```bash
+cmake --build RF_Uart/build --target flash          # 烧录（默认等 60s 上电窗口）
+cmake --build RF_Uart/build --target flash-verify   # 只校验
+cmake --build RF_UartDongle/build --target flash    # 主机
+```
+
+相关 `-D` 参数（configure 时给）：`ISP_WAIT`（等待秒数）、`ISP_PORT`（**留空=自动查找** `ttyACM*`/`ttyUSB*`，脚本负责建 `ttyISPx` 软链）、
+`ISP_CONFIG`（默认工程自带的 Config.ini）、`ISP_BAUD`。
+
+**方式 B：脚本**
+
 
 ```bash
 # Config.ini 用 skill 自带的那份（固件由 -f 指定，从机/主机通用）
@@ -378,7 +392,12 @@ sudo ~/.local/bin/WCHISPTool_CMD -p /dev/ttyISP0 -b 115200 \
 | 4 | 串口名称无效 |
 | 5 | **未枚举到设备** —— 多半是没在等待窗口内上电 |
 | 6 | 芯片类型与 `Config.ini` 不符 |
+| **7** | **串口已打开但读不到芯片信息** —— 通常仍是**没赶上上电瞬间**（BOOT 只在上电瞬间存在）；**串口权限不足**也会报这个码 |
 | 13 / 14 | 下载失败 / 校验失败 |
+
+> **实测**：`WCHISPTool_CMD` 单次运行约 **2.05 秒**（内部 `Wait isp dev timeout` 期间持续尝试握手），
+> 所以"等待上电"靠脚本反复调用实现，且**不必再插 sleep**（否则监听会有空档、成倍错过 BOOT 窗口）。
+> 另：`-v boot` 在 V3.70 下即使缺配置也不报错，**配置是否有效只能靠真实烧录验证**。
 
 > **WSL 里只有串口方式可行**：USB 方式（`/dev/ch37x`）需要 `ch37x.ko` 内核模块，
 > 而 WSL2 是定制内核、没有 `/lib/modules/$(uname -r)/build`，编不出模块。

@@ -29,7 +29,7 @@ extern "C"
  * 由主循环把计数清零。于是只有"上电后很快又断电"才会累积，
  * 累计到 BOOT_UNBIND_TIMES 次 → 清除绑定信息（解绑）。 */
 #define  BOOT_UNBIND_TIMES      5
-#define  BOOT_FAST_RESET_SEC    2
+#define  BOOT_FAST_RESET_SEC    5
 
 extern uint32_t  gRfRxFlag;
 extern struct simple_buf *pRfBuf;

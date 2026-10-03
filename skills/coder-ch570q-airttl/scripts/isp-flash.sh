@@ -54,7 +54,7 @@ usage() {
 
 提示:
   · 运行前必须让 MCU 进入 BOOT 下载模式，否则会报「未枚举到设备」(状态码 5)
-  · 工具要求 root，脚本内部已用 sudo 调用
+  · 权限不足时脚本自动用 sudo（软链/串口已可访问则不提权；可用 ISP_SUDO=0/1 强制）
   · 没有现成可用工具时，脚本会打印自行编译的命令
 EOF
 }
@@ -141,10 +141,27 @@ fi
 
 [ -e "$PORT" ] || { echo "❌ 串口设备不存在: $PORT" >&2; exit 1; }
 
+# ---------- 决定是否需要 sudo ----------
+# 软链已正确存在、且目标串口可写时无需提权（例如节点已是 666，或本用户在 dialout 组）。
+# 可用 ISP_SUDO=1 强制 sudo、ISP_SUDO=0 强制不提权。
+if [ "${ISP_SUDO:-auto}" = "1" ]; then
+    SUDO=sudo
+elif [ "${ISP_SUDO:-auto}" = "0" ]; then
+    SUDO=""
+elif [ -L "$LINK" ] && [ "$(readlink -f "$LINK")" = "$(readlink -f "$PORT")" ] && [ -w "$PORT" ]; then
+    SUDO=""
+else
+    SUDO=sudo
+fi
+
 # ---------- 建立工具要求的 ttyISPx 软链接 ----------
 if [ "$PORT" != "$LINK" ]; then
-    echo "▶ 创建软链接: $LINK -> $PORT"
-    sudo ln -sfn "$PORT" "$LINK"
+    if [ -L "$LINK" ] && [ "$(readlink -f "$LINK")" = "$(readlink -f "$PORT")" ]; then
+        :   # 已是正确软链，无需重建
+    else
+        echo "▶ 创建软链接: $LINK -> $PORT"
+        $SUDO ln -sfn "$PORT" "$LINK"
+    fi
 fi
 
 echo "▶ 工具    : $TOOL"
@@ -159,7 +176,7 @@ echo
 # 所以等待模式下反复重试，让用户有机会给 MCU 上电。
 run_once() {
     set +e
-    sudo "$TOOL" -p "$LINK" -b "$BAUD" -c "$CFG" -o "$OP" -f "$FW"
+    $SUDO "$TOOL" -p "$LINK" -b "$BAUD" -c "$CFG" -o "$OP" -f "$FW"
     RC=$?
     set -e
     return "$RC"
@@ -173,9 +190,16 @@ if [ "${WAIT:-0}" -gt 0 ] 2>/dev/null; then
     while :; do
         run_once || RC=$?
         [ "$RC" -eq 0 ] && break
-        [ "$RC" -ne 5 ] && break          # 只有"未枚举到设备"值得重试
+        # 5=未枚举到设备、7=串口开了但读不到芯片信息 —— 两者都是"还没进 BOOT"的典型表现
+        # （BOOT 只在上电瞬间存在），所以都要在等待窗口内继续重试。
+        case "$RC" in
+            5|7) ;;
+            *)   break ;;
+        esac
         [ "$(date +%s)" -ge "$deadline" ] && break
-        sleep 0.5
+        # 工具自身会 "Wait isp dev timeout" 约 2 秒（实测单次运行 2.05s），
+        # 所以这里不必再 sleep —— 去掉后监听无空档，覆盖率 100%。
+        :
     done
 else
     run_once || RC=$?
@@ -186,6 +210,7 @@ case "$RC" in
     0)  echo "✅ 操作成功（状态码 0）" ;;
     4)  echo "❌ 串口名称无效（状态码 4）—— 检查 $LINK 软链接" ;;
     5)  echo "❌ 未枚举到设备（状态码 5）—— MCU 很可能不在 BOOT 下载模式，或串口没接对" ;;
+    7)  echo "❌ 读不到设备信息（状态码 7）—— 串口已打开但芯片未响应，通常仍是没赶上上电瞬间；权限不足也会报这个码" ;;
     6)  echo "❌ 芯片类型与配置不符（状态码 6）—— Config.ini 里选的型号要对得上 CH570" ;;
     13) echo "❌ 下载失败（状态码 13）" ;;
     14) echo "❌ 校验失败（状态码 14）" ;;
