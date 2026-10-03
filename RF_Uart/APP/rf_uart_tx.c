@@ -42,6 +42,7 @@ static void __attribute__((noinline)) rfBootCountClearTask( void );
 static void rfProcessTimeout( void );
 void LedTimerCalibBegin( void );
 void LedTimerCalibEnd( void );
+void LedDataPulse( void );          /* 定义在文件后部，此处前置声明避免隐式声明告警 */
 
 // tf status callbacks
 rfStatusCBs_t rfCBs =
@@ -521,8 +522,6 @@ void RF_StatusQuery( void )
 {
     uint8_t s;
 
-    rfBootCountClearTask();     /* 【重启 N 次解绑】跑满 N 秒即清零启动计数 */
-
     /* ---- 连接状态去抖 ---- */
     {
         uint32_t now = SysTick->CNT;
@@ -746,6 +745,12 @@ static void __attribute__((noinline)) rfBootCountStartup( void )
     }
 #endif
 
+    /* 【纯计数判定，不依赖运行时长】
+     * 早期版本是"跑满 N 秒即清零"，但那个时间窗口把操作难度拉满：上电后
+     * 必须极短时间内断电，稍慢一点计数就被清掉，表现为"怎么试都不解绑"。
+     * 现在只有一条清零途径 —— 配对成功（rf_bound 里），因此：
+     *   · 正常使用（上电即配对成功）→ 每次归零，永不误解绑；
+     *   · 想解绑（上电但配不上，例如主机断电）→ 计数只增，第 5 次必解绑。 */
     if( (uint16_t)(bootCnt + 1) >= BOOT_UNBIND_TIMES )
     {
         /* 连续快速重启达到阈值 → 解绑：清掉绑定信息并把计数归零 */
@@ -770,7 +775,6 @@ static void __attribute__((noinline)) rfBootCountStartup( void )
         info.bootCount  = 0;
         info.resv       = 0;
         rfSaveBoundInfo( &info );
-        gBootCountPending = 0;
     }
     else
     {
@@ -780,7 +784,6 @@ static void __attribute__((noinline)) rfBootCountStartup( void )
         info.bootCount  = bootCnt + 1;
         info.resv       = BOOT_CNT_MAGIC;
         rfSaveBoundInfo( &info );
-        gBootCountPending = 1;
     }
 }
 
