@@ -28,7 +28,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 TOOL="${ISP_BIN:-}"          # WCHISPTool_CMD 路径
 WAIT=0                       # 等待重试秒数（0=只试一次）
-PORT=""                      # 真实串口设备
+PORT="${ISP_PORT:-}"          # 真实串口设备；优先级: -p/--port > 环境变量 ISP_PORT > 自动查找
 LINK="/dev/ttyISP0"          # 工具要求的设备名（必须叫 ttyISPx）
 BAUD=115200
 CFG=""                       # Config.ini
@@ -45,6 +45,7 @@ usage() {
 
 选项:
   -p, --port <dev>        串口设备（默认自动查找 /dev/ttyUSB*、/dev/ttyACM*）
+                              也可用环境变量 ISP_PORT 指定（便于 CMake 构建时覆盖）
   -b, --baud <n>          波特率，默认 115200
   -o, --operation <x>     program（下载，默认）| verify（校验）
   -t, --tool <path>       WCHISPTool_CMD 路径（默认自动查找）
