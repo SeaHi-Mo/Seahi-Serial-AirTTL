@@ -36,7 +36,7 @@ rfPackage_t *pPkt_t;
 
 static void rfProcessRx( rfPackage_t *pPkt );
 static void rfProcessTx( void );
-static void __HIGH_CODE rfSaveBoundInfo( rfBoundInfo_t *info );
+static int  __HIGH_CODE rfSaveBoundInfo( rfBoundInfo_t *info );
 static void __attribute__((noinline)) rfBootCountStartup( void );
 static void __attribute__((noinline)) rfBootCountClearTask( void );
 static void rfProcessTimeout( void );
@@ -684,20 +684,66 @@ void RF_StatusQuery( void )
  * @param   info 待写入的绑定信息（RAM，4 字节对齐）
  * @return  None.
  */
-static void __HIGH_CODE rfSaveBoundInfo( rfBoundInfo_t *info )
+/* Flash 擦写失败报警：刻意**不加** __HIGH_CODE。
+ * 调用它时擦写已结束，可以安全执行 Flash 里的代码；放进 RAM 会白占内存
+ * （从机 RAM 已到 95%+，96% 即跑不稳）。 */
+static void rfFlashFailAlarm( void )
+{
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+    uint8_t i;
+    for( i = 0; i < 10; i++ )
+    {
+        GPIOA_SetBits( LED_PIN );
+        mDelaymS( 60 );
+        GPIOA_ResetBits( LED_PIN );
+        mDelaymS( 60 );
+    }
+#endif
+}
+
+static int __HIGH_CODE rfSaveBoundInfoTry( rfBoundInfo_t *info )
+{
+    /* 单次尝试。必须 __HIGH_CODE：擦写期间 CPU 取指受影响，碰 Flash 的代码要在 RAM 跑。
+     * ISP572.h 明确 ERASE / WRITE / VERIFY 均 "return 0 if success"。
+     * 原实现只查 VERIFY、丢弃了 ERASE/WRITE 的返回值 —— 若擦除未成功，Flash 写入
+     * 按位与（1->0）仍可能通过校验，旧数据与新数据混在一起，绑定/解绑行为诡异且
+     * 无从排查。这里三者都查，便于上层判断失败原因。 */
+    if( FLASH_ROM_ERASE( BOUND_INFO_FLASH_ADDR, 4096 ) != 0 )
+    {
+        return -1;
+    }
+    if( FLASH_ROM_WRITE( BOUND_INFO_FLASH_ADDR, info, sizeof(*info) ) != 0 )
+    {
+        return -2;
+    }
+    if( FLASH_ROM_VERIFY( BOUND_INFO_FLASH_ADDR, info, sizeof(*info) ) != 0 )
+    {
+        return -3;
+    }
+    return 0;
+}
+
+/* 重试与报警：刻意**不加** __HIGH_CODE（省 RAM）。
+ * 每次尝试返回时 Flash 操作已结束，此时执行 Flash 里的代码是安全的。 */
+static int rfSaveBoundInfo( rfBoundInfo_t *info )
 {
     int tries;
+    int rc = 0;
 
     for( tries = 0; tries < 3; tries++ )
     {
-        FLASH_ROM_ERASE( BOUND_INFO_FLASH_ADDR, 4096 );
-        FLASH_ROM_WRITE( BOUND_INFO_FLASH_ADDR, info, sizeof(*info) );
-        if( FLASH_ROM_VERIFY( BOUND_INFO_FLASH_ADDR, info, sizeof(*info) ) == 0 )
+        rc = rfSaveBoundInfoTry( info );
+        if( rc == 0 )
         {
-            break;
+            return 0;
         }
-        PRINT("bound info write retry %d\n", tries + 1);
+        PRINT("bound info flash op failed(%d), retry %d\n", rc, tries + 1);
     }
+
+    /* 失败不再静默：此前用户只能感觉"解绑不好用"，无从判断原因 */
+    PRINT("!!! bound info flash write FAILED (rc=%d)\n", rc);
+    rfFlashFailAlarm( );
+    return rc;
 }
 
 /*******************************************************************************
