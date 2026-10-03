@@ -823,7 +823,9 @@ static void __attribute__((noinline)) rfBootCountStartup( void )
     }
     else
     {
-        /* 记录本次启动(+1)；跑满 BOOT_FAST_RESET_SEC 秒后由 clear task 清零 */
+        /* 记录本次启动(+1)。注意：只有"配对成功"才清零（见 rf_bound），
+         * 已不再有"跑满 N 秒自动清零"的机制 —— 那个时间窗口曾导致
+         * "怎么试都不解绑"。 */
         info.head       = BOUND_INFO_HEAD;
         info.serverData = gServerData;
         info.bootCount  = bootCnt + 1;
