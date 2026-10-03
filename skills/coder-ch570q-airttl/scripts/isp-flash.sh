@@ -55,7 +55,7 @@ usage() {
 
 提示:
   · 运行前必须让 MCU 进入 BOOT 下载模式，否则会报「未枚举到设备」(状态码 5)
-  · 权限不足时脚本自动用 sudo（软链/串口已可访问则不提权；可用 ISP_SUDO=0/1 强制）
+  · 默认用 sudo 调用工具（工具通常需要 root）；已配 udev/权限充足时可 ISP_SUDO=0
   · 没有现成可用工具时，脚本会打印自行编译的命令
 EOF
 }
@@ -145,15 +145,15 @@ fi
 # ---------- 决定是否需要 sudo ----------
 # 软链已正确存在、且目标串口可写时无需提权（例如节点已是 666，或本用户在 dialout 组）。
 # 可用 ISP_SUDO=1 强制 sudo、ISP_SUDO=0 强制不提权。
-if [ "${ISP_SUDO:-auto}" = "1" ]; then
-    SUDO=sudo
-elif [ "${ISP_SUDO:-auto}" = "0" ]; then
-    SUDO=""
-elif [ -L "$LINK" ] && [ "$(readlink -f "$LINK")" = "$(readlink -f "$PORT")" ] && [ -w "$PORT" ]; then
-    SUDO=""
-else
-    SUDO=sudo
-fi
+# ⚠️ 默认就用 sudo：WCHISPTool 通常需要 root。
+# 不要用 `[ -w "$PORT" ]` 判断! —— WSL 的 usbip 串口设备权限位会骗人：只读能打开、
+# 以读写方式打开被拒，而 test -w 却返回真。之前据此跳过 sudo，导致工具打不开串口，
+# 一路报 `Code:7 Fail to get device info`（手动带 sudo 却能成功）。
+# 若确无需要提权（例如已配 udev MODE=0666），可设 ISP_SUDO=0。
+case "${ISP_SUDO:-1}" in
+    0)  SUDO="" ;;
+    *)  SUDO=sudo ;;
+esac
 
 # ---------- 建立工具要求的 ttyISPx 软链接 ----------
 if [ "$PORT" != "$LINK" ]; then
