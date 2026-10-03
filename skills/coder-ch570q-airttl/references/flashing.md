@@ -317,8 +317,8 @@ CH570 的 ROM 在**上电/复位那一刻**检测 ISP 握手数据，因此：
 |---|---|
 | 串口连接 | USB 转串口接到 CH570 的 ISP 串口，**电平 3.3V** |
 | 映射进 WSL | 见 [wsl-usbip.md](./wsl-usbip.md)。**注意 CH343 会枚举成 `/dev/ttyACM0`**（CDC-ACM 类），不是 `/dev/ttyUSB*`（那是 CH340/CP210x 之类）；用 `ls /dev/ttyUSB* /dev/ttyACM*` 确认 |
-| `Config.ini` | **必须用 Windows 版 `WchIspStudio.exe`** 的「文件→保存配置」生成（[下载](https://www.wch.cn/downloads/WCHISPTool_Setup_exe.html)，选型要有 CH570） |
-| 工具 | 见下方编译命令（官方预编译版要求 glibc ≥ 2.33，Ubuntu 20.04 跑不了） |
+| `Config.ini` | **已随 skill 提供**：[`scripts/Config.ini`](../scripts/Config.ini)（CH570Q/CH570，`IsEraseAllCFlash=0`，因此**不会擦掉从机 `0xF0000` 的绑定信息**）。里面的 `swzUserFile1` 只是占位——**实际固件由命令行的 `-f` 指定**，所以从机/主机通用，不必各改一份。要自行重生成则用 Windows 版 `WchIspStudio.exe` 的「文件→保存配置」（[下载](https://www.wch.cn/downloads/WCHISPTool_Setup_exe.html)） |
+| 工具 | 本机已有编译好的 **`~/.local/bin/WCHISPTool_CMD`（V3.70，实测 `-v tool` 正常）**，`isp-flash.sh` 会优先找它。子模块里的 `tools/wchisptool/bin/x64/WCHISPTool_CMD` 是官方预编译版，**要求 glibc ≥ 2.33，Ubuntu 20.04 跑不了**（报 `GLIBC_2.33 not found`），必要时按下方命令自行编译 |
 
 ```bash
 # 编译出本机可用的 WCHISPTool_CMD（源码 + 静态库都在子模块里）
@@ -331,11 +331,14 @@ g++ src/IspCmdTool.cpp -I lib/x64/dynamic \
 ### 11.3 烧录
 
 ```bash
+# Config.ini 用 skill 自带的那份（固件由 -f 指定，从机/主机通用）
+CFG=skills/coder-ch570q-airttl/scripts/Config.ini
+
 # 脚本方式（推荐）：-w 10 = 等待 10 秒，期间给 MCU 上电
-skills/coder-ch570q-airttl/scripts/isp-flash.sh -c ~/Config.ini -f RF_Uart/build/RF_Uart.hex -w 10
+skills/coder-ch570q-airttl/scripts/isp-flash.sh -c "$CFG" -f RF_Uart/build/RF_Uart.hex -w 10
 
 # 只校验
-skills/coder-ch570q-airttl/scripts/isp-flash.sh -c ~/Config.ini -f RF_Uart/build/RF_Uart.hex -o verify -w 10
+skills/coder-ch570q-airttl/scripts/isp-flash.sh -c "$CFG" -f RF_Uart/build/RF_Uart.hex -o verify -w 10
 ```
 
 等价的手工命令：
