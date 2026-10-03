@@ -72,7 +72,23 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          # 把 tag 注解（annotated tag）并进发布说明放在最前面。
+          # 打 tag 时用 `git tag -a vX.Y.Z -F notes.md --cleanup=verbatim` 写好 changelog，
+          # 这样 Release 页就能直接看到"相对上一版增加了什么"。
+          # 轻量 tag 没有注解（%(contents) 只会回一个 tag 名），这里自动跳过。
+          # 注意：`git tag -F` 默认按 `--cleanup=strip` 处理，## 开头的行会被当注释删掉，
+          # 所以务必显式带上 --cleanup=verbatim。
+          TAG_TYPE="$(git for-each-ref "refs/tags/${TAG}" --format='%(objecttype)' 2>/dev/null || true)"
+          TAG_NOTES=""
+          if [ "${TAG_TYPE}" = "tag" ]; then
+            TAG_NOTES="$(git for-each-ref "refs/tags/${TAG}" --format='%(contents)' 2>/dev/null || true)"
+          else
+            echo "警告：${TAG} 不是 annotated tag（objecttype=${TAG_TYPE}），发布说明将不含 tag 注解"
+          fi
           {
+            if [ -n "${TAG_NOTES}" ]; then
+              printf '%s\n\n---\n\n' "${TAG_NOTES}"
+            fi
             echo "## 固件"
             echo ""
             echo "| 文件 | 角色 | 烧写目标 |"
