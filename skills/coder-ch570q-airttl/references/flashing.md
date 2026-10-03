@@ -316,7 +316,7 @@ CH570 的 ROM 在**上电/复位那一刻**检测 ISP 握手数据，因此：
 | 项 | 说明 |
 |---|---|
 | 串口连接 | USB 转串口接到 CH570 的 ISP 串口，**电平 3.3V** |
-| **⚠️ 接线方式（反直觉，务必照做）** | ISP 烧录必须**同名相接**：**CH570 的 TXD ↔ TTL 的 TXD**、**RXD ↔ RXD**。**不是**通常的「TX↔RX 交叉」接法 —— 实测只有同名相接才烧得进去（CH570 的 ROM ISP 握手与常规串口通信的引脚方向不同）。注意**正常透传/通信时仍是交叉接**（从机 `PA0=TXD` 接目标板 RX、`PA1=RXD` 接目标板 TX），别把两种场景的接法搞混 |
+| **⚠️ 接线方式（反直觉，务必照做）** | ISP 烧录必须**同名相接**：**CH570 的 TXD ↔ TTL 的 TXD**、**RXD ↔ RXD**。**不是**通常的「TX↔RX 交叉」接法 —— 实测只有同名相接才烧得进去（CH570 的 ROM ISP 握手与常规串口通信的引脚方向不同）。**⚠️ 这种接法仅在 ISP 烧录时使用**：**正常透传/通信时仍是交叉接**（从机 `PA0=TXD` 接目标板 RX、`PA1=RXD` 接目标板 TX），千万别把两种场景搞混 |
 | 映射进 WSL | 见 [wsl-usbip.md](./wsl-usbip.md)。**注意 CH343 会枚举成 `/dev/ttyACM0`**（CDC-ACM 类），不是 `/dev/ttyUSB*`（那是 CH340/CP210x 之类）；用 `ls /dev/ttyUSB* /dev/ttyACM*` 确认 |
 | `Config.ini` | **已随 skill 提供**：[`scripts/Config.ini`](../scripts/Config.ini)（CH570Q/CH570，`IsEraseAllCFlash=0`，因此**不会擦掉从机 `0xF0000` 的绑定信息**）。里面的 `swzUserFile1` 只是占位——**实际固件由命令行的 `-f` 指定**，所以从机/主机通用，不必各改一份。要自行重生成则用 Windows 版 `WchIspStudio.exe` 的「文件→保存配置」（[下载](https://www.wch.cn/downloads/WCHISPTool_Setup_exe.html)） |
 | 工具 | 本机已有编译好的 **`~/.local/bin/WCHISPTool_CMD`（V3.70，实测 `-v tool` 正常）**，`isp-flash.sh` 会优先找它。子模块里的 `tools/wchisptool/bin/x64/WCHISPTool_CMD` 是官方预编译版，**要求 glibc ≥ 2.33，Ubuntu 20.04 跑不了**（报 `GLIBC_2.33 not found`），必要时按下方命令自行编译 |
