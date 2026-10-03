@@ -24,6 +24,13 @@ extern "C"
 
 #define  BOUND_INFO_FLASH_ADDR         (1024*236)
 
+/* 【重启 N 次解绑】
+ * 每次上电把 bootCount+1 写进 Flash；若本次能持续运行 BOOT_FAST_RESET_SEC 秒，
+ * 由主循环把计数清零。于是只有"上电后很快又断电"才会累积，
+ * 累计到 BOOT_UNBIND_TIMES 次 → 清除绑定信息（解绑）。 */
+#define  BOOT_UNBIND_TIMES      5
+#define  BOOT_FAST_RESET_SEC    2
+
 extern uint32_t  gRfRxFlag;
 extern struct simple_buf *pRfBuf;
 

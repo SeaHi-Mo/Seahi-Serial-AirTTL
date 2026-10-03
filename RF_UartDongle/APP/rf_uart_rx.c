@@ -295,6 +295,16 @@ static void rfProcessRx( rfPackage_t *pPkt )
                 }
                 gDataSeq++;
             }
+            else if( pPkt->seq == (uint8_t)(gDataSeq - 1) )
+            {
+                /* 【失步保护】重复包：上次的应答丢了、从机在重传。
+                 * 数据上一次已处理过，这里只重发应答（seq 回显从机的值），
+                 * 让从机的 gTxDataSeq 能正常推进，避免两端序号永久失配死锁。 */
+                pPkt_t->length = PKT_DATA_OFFSET;
+                pRsp_t->opcode = OPCODE_ACK;
+                pPkt_t->seq = pPkt->seq;
+                pPkt_t->resv = 0;
+            }
             rf_tx_start( pPkt_t, 20 );
             if( pRsp_t->opcode == OPCODE_BSP )
             {
@@ -331,9 +341,15 @@ static void rfProcessRx( rfPackage_t *pPkt )
                 }
                 gDataSeq++;
             }
-            else
+            else if( pPkt->seq == (uint8_t)(gDataSeq - 1) )
             {
-                // 重传
+                /* 【失步保护】同上：重复包只重发 ACK。
+                 * 该包的数据上一次已写入 USB 侧，这里重复写会导致数据重复，
+                 * 所以既不丢也不重，只是把应答补上。 */
+                pPkt_t->length = PKT_DATA_OFFSET;
+                pRsp_t->opcode = OPCODE_ACK;
+                pPkt_t->seq = pPkt->seq;
+                pPkt_t->resv = 0;
             }
             rf_tx_start( pPkt_t, 20 );
             

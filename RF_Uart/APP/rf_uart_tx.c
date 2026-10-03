@@ -27,6 +27,7 @@ uint16_t gTimeout;
 uint16_t gServerData;
 
 uint8_t gTxDataSeq;
+static uint8_t gBootCountPending = 0;   /* 启动计数已写 Flash，待正常运行后清零 */
 uint8_t gRfStatus;
 uint8_t gBoundStatus;
 uint8_t getDataProbe;
@@ -35,6 +36,8 @@ rfPackage_t *pPkt_t;
 
 static void rfProcessRx( rfPackage_t *pPkt );
 static void rfProcessTx( void );
+static void __attribute__((noinline)) rfBootCountStartup( void );
+static void __attribute__((noinline)) rfBootCountClearTask( void );
 static void rfProcessTimeout( void );
 void LedTimerCalibBegin( void );
 void LedTimerCalibEnd( void );
@@ -122,8 +125,10 @@ static void rf_bound( bound_rsp_t *rsp )
     rf_rx_set_phy_type( rsp->phy );
     info.head = 0x55aa;
     info.serverData = gServerData;
+    info.bootCount = 0;                 /* 绑定成功即清零启动计数 */
+    info.resv = BOOT_CNT_MAGIC;
     FLASH_ROM_ERASE( BOUND_INFO_FLASH_ADDR, 4096 );
-    FLASH_ROM_WRITE( BOUND_INFO_FLASH_ADDR,&info,4 );
+    FLASH_ROM_WRITE( BOUND_INFO_FLASH_ADDR,&info,sizeof(info) );
 
     RF_bound_Flag = 1;
     PRINT("bound success.%x %x\n",rsp->accessaddr,rsp->channel );
@@ -307,6 +312,15 @@ static void rfProcessRx( rfPackage_t *pPkt )
         gTxBuf.status = STA_IDLE;
         gTxDataSeq ++;
         gTimeout = 0;
+    }
+    else
+    {
+        /* 【seq 失步保护】seq 不匹配（主机重传/迟到包）：RFIP_SetRx 是一次性接收，
+         * 收到包后必须再次调用才会继续收下一包；而本函数是唯一的 RX 路径入口，
+         * 这里若不重开窗口，接收会永久停摆，主循环又卡在"等应答"不再发包 ——
+         * 表现为链路静默、但主机侧没有任何 disconnect/connect timeout 日志。
+         * 注意：只重开接收，不动 gTxDataSeq 等状态，让既有超时重传机制接管。 */
+        rf_rx_start( 150 );
     }
 }
 
@@ -507,6 +521,8 @@ void RF_StatusQuery( void )
 {
     uint8_t s;
 
+    rfBootCountClearTask();     /* 【重启 N 次解绑】跑满 N 秒即清零启动计数 */
+
     /* ---- 连接状态去抖 ---- */
     {
         uint32_t now = SysTick->CNT;
@@ -652,6 +668,101 @@ void RF_StatusQuery( void )
     }
 }
 
+
+/*******************************************************************************
+ * @fn      rfBootCountStartup
+ *
+ * @brief   上电维护「连续快速启动计数」：达到 BOOT_UNBIND_TIMES 次即解绑。
+ *
+ *          刻意**不加** __HIGH_CODE：本函数只在启动阶段跑一次（含 Flash 擦写），
+ *          放进 .highcode 会白占 RAM（从机 RAM 已到 93.9%，96% 即跑不稳）。
+ *
+ * @return  None.
+ */
+static void __attribute__((noinline)) rfBootCountStartup( void )
+{
+    rfBoundInfo_t *pInfo = (rfBoundInfo_t *)(BOUND_INFO_FLASH_ADDR);
+    rfBoundInfo_t  info;
+    uint16_t       bootCnt;
+
+    if( pInfo->head == BOUND_INFO_HEAD )
+    {
+        gServerData = pInfo->serverData;
+        /* 旧格式(resv 不是魔数)时 bootCount 无效，从 0 起算，避免升级后误触发 */
+        bootCnt     = (pInfo->resv == BOOT_CNT_MAGIC) ? pInfo->bootCount : 0;
+    }
+    else
+    {
+        gServerData = 0;
+        bootCnt     = 0;
+    }
+
+    if( (uint16_t)(bootCnt + 1) >= BOOT_UNBIND_TIMES )
+    {
+        /* 连续快速重启达到阈值 → 解绑：清掉绑定信息并把计数归零 */
+        PRINT("reboot %d times -> unbind.\n", bootCnt + 1);
+        gServerData = 0;
+        info.head       = 0;
+        info.serverData = 0;
+        info.bootCount  = 0;
+        info.resv       = 0;
+        FLASH_ROM_ERASE( BOUND_INFO_FLASH_ADDR, 4096 );
+        FLASH_ROM_WRITE( BOUND_INFO_FLASH_ADDR, &info, sizeof(info) );
+        gBootCountPending = 0;
+    }
+    else
+    {
+        /* 记录本次启动(+1)；跑满 BOOT_FAST_RESET_SEC 秒后由 clear task 清零 */
+        info.head       = BOUND_INFO_HEAD;
+        info.serverData = gServerData;
+        info.bootCount  = bootCnt + 1;
+        info.resv       = BOOT_CNT_MAGIC;
+        FLASH_ROM_ERASE( BOUND_INFO_FLASH_ADDR, 4096 );
+        FLASH_ROM_WRITE( BOUND_INFO_FLASH_ADDR, &info, sizeof(info) );
+        gBootCountPending = 1;
+    }
+}
+
+/*******************************************************************************
+ * @fn      rfBootCountClearTask
+ *
+ * @brief   主循环任务：正常运行满 BOOT_FAST_RESET_SEC 秒即把启动计数清零，
+ *          这样只有"上电后很快又断电"才会累积到解绑阈值。
+ *          同样刻意不加 __HIGH_CODE（时序不敏感），省 RAM。
+ *
+ * @return  None.
+ */
+static void __attribute__((noinline)) rfBootCountClearTask( void )
+{
+    static uint32_t bootRefTick = 0;
+    uint32_t       now;
+    rfBoundInfo_t  info;
+
+    if( !gBootCountPending )
+    {
+        return;
+    }
+
+    now = SysTick->CNT;
+    if( bootRefTick == 0 )
+    {
+        bootRefTick = now;
+    }
+    if( (uint32_t)( now - bootRefTick ) < LedMsToTicks( BOOT_FAST_RESET_SEC * 1000 ) )
+    {
+        return;
+    }
+
+    gBootCountPending = 0;
+    info.head       = BOUND_INFO_HEAD;
+    info.serverData = gServerData;
+    info.bootCount  = 0;
+    info.resv       = BOOT_CNT_MAGIC;
+    FLASH_ROM_ERASE( BOUND_INFO_FLASH_ADDR, 4096 );
+    FLASH_ROM_WRITE( BOUND_INFO_FLASH_ADDR, &info, sizeof(info) );
+    PRINT("boot counter cleared.\n");
+}
+
 /*******************************************************************************
  * @fn      RF_UartTxInit
  *
@@ -664,7 +775,6 @@ void RF_StatusQuery( void )
 __HIGH_CODE
 void RF_UartTxInit( void )
 {
-    rfBoundInfo_t *pInfo;
     PRINT("----------------- rf uart tx mode -----------------\n");
     gTxDataSeq = 0;
     gRfRxFlag = 0;
@@ -672,14 +782,8 @@ void RF_UartTxInit( void )
     gTxBuf.status = 0;
     rf_buffer_create(&pRfBuf);
 
-    pInfo = (rfBoundInfo_t *)(BOUND_INFO_FLASH_ADDR);
-    if( pInfo->head == BOUND_INFO_HEAD )
-    {
-        gServerData = pInfo->serverData;
-    }
-    else {
-        gServerData = 0;
-    }
+    rfBootCountStartup();               /* 【重启 N 次解绑】上电计数/解绑 */
+
     PRINT("gServerData = %x \n",gServerData);
     RFRole_RegisterStatusCbs( &rfCBs );
 }

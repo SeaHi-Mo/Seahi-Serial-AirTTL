@@ -35,3 +35,5 @@ desktop.ini
 
 # 本地调试记录（仅本地保留，不进仓库）
 DEBUG-NOTES.md
+__pycache__/
+*.pyc

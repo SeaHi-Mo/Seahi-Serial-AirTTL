@@ -1,0 +1,2 @@
+elapsed_min,dn_tx,dn_rx,dn_loss_pct,up_tx,up_rx,up_loss_pct,silent_rounds
+1.0,100,100,0.00,100,100,0.00,0

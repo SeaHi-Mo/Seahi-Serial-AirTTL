@@ -211,9 +211,12 @@ typedef struct
 {
     uint16_t head;
     uint16_t serverData;
+    uint16_t bootCount;         /* 连续快速启动计数（见「重启 N 次解绑」） */
+    uint16_t resv;              /* 格式标记：等于 BOOT_CNT_MAGIC 时 bootCount 才有效 */
 } rfBoundInfo_t;
 
 #define  BOUND_INFO_HEAD         0X55AA
+#define  BOOT_CNT_MAGIC          0xA55A
 
 
 /* respond opcode define */

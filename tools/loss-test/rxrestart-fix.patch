@@ -1,0 +1,118 @@
+diff --git a/RF_Uart/APP/rf_uart_tx.c b/RF_Uart/APP/rf_uart_tx.c
+index 5403d83..a6a85fd 100644
+--- a/RF_Uart/APP/rf_uart_tx.c
++++ b/RF_Uart/APP/rf_uart_tx.c
+@@ -35,6 +35,7 @@ rfPackage_t *pPkt_t;
+ 
+ static void rfProcessRx( rfPackage_t *pPkt );
+ static void rfProcessTx( void );
++static uint8_t rfTxBufFree( void );
+ static void rfProcessTimeout( void );
+ void LedTimerCalibBegin( void );
+ void LedTimerCalibEnd( void );
+@@ -71,6 +72,35 @@ static void rf_buffer_create(struct simple_buf **buf)
+     *buf = simple_buf_create(&rf_buffer, rf_buf, sizeof(rf_buf) );
+ }
+ 
++/*******************************************************************************
++ * @fn      rfTxBufFree
++ *
++ * @brief   下行缓冲（pRfBuf）剩余空间，随每个发往主机的包回告，供主机做流控。
++ *
++ *          从机下行只有 512B 缓冲，主机捎带速率若超过从机 UART 输出速率，
++ *          缓冲就会满并丢包。把余量放进 rfPackage_t 的 resv（原本恒为 0 的
++ *          保留字段），主机即可据此限速；不识别该字段的旧主机自然忽略，向后兼容。
++ *
++ * @return  剩余字节数（上限 DATA_LEN_MAX_TX；0 = 缓冲已满，请主机暂停捎带）
++ */
++__HIGH_CODE
++static uint8_t rfTxBufFree( void )
++{
++    uint32_t used;
++    uint32_t free_len;
++
++    PFIC_DisableAllIRQ();
++    used = pRfBuf->data_len;
++    PFIC_EnableAllIRQ();
++
++    free_len = pRfBuf->buf_len - used;
++    if( free_len > DATA_LEN_MAX_TX )
++    {
++        free_len = DATA_LEN_MAX_TX;
++    }
++    return (uint8_t)free_len;
++}
++
+ /*******************************************************************************
+  * @fn      rf_disconnect
+  *
+@@ -308,6 +338,13 @@ static void rfProcessRx( rfPackage_t *pPkt )
+         gTxDataSeq ++;
+         gTimeout = 0;
+     }
++    else
++    {
++        /* seq 不匹配（主机重传/迟到包）：RFIP_SetRx 是一次性接收，不重开窗口
++         * 接收会永久停摆、主循环卡在等应答（表现为链路静默但主机侧无任何日志）。
++         * 实测：加上它之后"空闲即断链"消失，多次发送不再需要重连。 */
++        rf_rx_start( 150 );
++    }
+ }
+ 
+ /*******************************************************************************
+@@ -586,7 +623,7 @@ void RF_StatusQuery( void )
+             pPkt_t->length = gTxBuf.len + PKT_DATA_OFFSET;
+             gTxBuf.status = STA_BUSY;
+             pPkt_t->seq = gTxDataSeq;
+-            pPkt_t->resv = 0;
++            pPkt_t->resv = rfTxBufFree();
+             rf_tx_start( gTxBuf.TxBuf, 60 );
+         }
+         else if( s == 0x80 )
+@@ -612,7 +649,7 @@ void RF_StatusQuery( void )
+             }
+             gTxBuf.status = STA_BUSY;
+             pPkt_t->seq = gTxDataSeq;
+-            pPkt_t->resv = 0;
++            pPkt_t->resv = rfTxBufFree();
+             rf_tx_start( gTxBuf.TxBuf, 60 );
+         }
+         else
+@@ -625,7 +662,7 @@ void RF_StatusQuery( void )
+                 pPkt_t->length = PKT_DATA_OFFSET;
+                 gTxBuf.status = STA_BUSY;
+                 pPkt_t->seq = gTxDataSeq;
+-                pPkt_t->resv = 0;
++                pPkt_t->resv = rfTxBufFree();
+                 rf_tx_start( gTxBuf.TxBuf, 60 );
+             }
+         }
+diff --git a/RF_UartDongle/APP/rf_uart_rx.c b/RF_UartDongle/APP/rf_uart_rx.c
+index 160b55f..8d9f5ad 100644
+--- a/RF_UartDongle/APP/rf_uart_rx.c
++++ b/RF_UartDongle/APP/rf_uart_rx.c
+@@ -248,6 +248,12 @@ static void rfProcessRx( rfPackage_t *pPkt )
+                 uint8_t s;
+                 typeBufSize len = DATA_LEN_MAX_TX;
+                 pPkt_t->type = PKT_CMD_RSP_STATUS;
++                /* 【流控】从机在 resv 里回告它下行缓冲的余量，据此限制本次捎带量。
++                 * 旧版从机该字段恒为 0 → 保持原上限（向后兼容）。 */
++                if( (pPkt->resv != 0) && (pPkt->resv < len) )
++                {
++                    len = pPkt->resv;
++                }
+                 if( gBoundStatus < BOUND_STATUS_EST  )
+                 {
+                     // 发送串口波特率
+@@ -314,6 +320,11 @@ static void rfProcessRx( rfPackage_t *pPkt )
+                 // 如果接收缓存满，则会丢数据
+                 len = DATA_LEN_MAX_TX;
+                 pPkt_t->type = PKT_DATA_RSP_ACK;
++                /* 【流控】同上：按从机回告的缓冲余量限制捎带量 */
++                if( (pPkt->resv != 0) && (pPkt->resv < len) )
++                {
++                    len = pPkt->resv;
++                }
+                 
+                 if( gBoundStatus == BOUND_STATUS_EST && !USB_RxQuery( pRsp_t->other.rspData, &len ) )
+                 {
