@@ -10,6 +10,7 @@
   <img alt="Toolchain" src="https://img.shields.io/badge/toolchain-riscv--wch--elf--gcc12-orange">
   <img alt="MCU" src="https://img.shields.io/badge/MCU-CH570Q%20%C2%B7%20RISC--V-green">
   <img alt="Wireless" src="https://img.shields.io/badge/2.4G-2M%20PHY-blueviolet">
+  <img alt="Release" src="https://img.shields.io/github/v/release/SeaHi-Mo/Seahi-Serial-AirTTL?label=release">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
 
@@ -19,7 +20,7 @@
 
 **Seahi-Serial-AirTTL** 是一套「**无线串口延长线**」。它把一根串口线拆成两半，中间用 2.4G 无线连接：
 
-- **主机（`RF_UartDongle`）**：U 盘大小的 USB Dongle，插在**电脑**上。上电后枚举成一个**虚拟串口**，电脑上的串口助手（minicom / screen / SSCOM / STM32CubeProgrammer…）像操作普通 USB 转串口一样操作它。
+- **主机（`RF_UartDongle`）**：U 盘大小的 USB Dongle，插在**电脑**上。**与从机配对成功后**才枚举成一个**虚拟串口**（未配对时 PC 上看不到任何设备），电脑上的串口助手（minicom / screen / SSCOM / STM32CubeProgrammer…）像操作普通 USB 转串口一样操作它。
 - **从机（`RF_Uart`）**：放在**被调试设备**旁边，用杜邦线接到目标板的串口上。
 
 于是你可以坐在电脑前，调试放在另一张桌子、另一个房间、甚至挂在电机/机柜上的设备，**不用再拖着长串口线跑来跑去**。
@@ -30,13 +31,15 @@
 
 | 特性 | 说明 |
 |---|---|
-| 🔌 **USB 免驱形态** | 默认枚举为 CH341 兼容设备（VID `0x1A86` / PID `0x7523`），Linux 内核自带 `ch341` 驱动，插上即出 `/dev/ttyUSB*` |
+| 🔌 **USB 免驱形态** | 默认枚举为 CH341 兼容设备（VID `0x1A86` / PID `0x7523`），Linux 内核自带 `ch341` 驱动；**未与从机配对时不枚举**（PC 上看不到设备），配对成功才出现 `/dev/ttyUSB*`，断开立即收回 |
 | 📡 **串口参数无线同步** | 电脑端串口工具改波特率 / 数据位 / 停止位 / 校验位，会通过无线**实时下发到从机**，从机的 UART 自动跟随，**不需要重新烧写固件** |
 | 🔁 **双向透传** | 下行（电脑 → 目标设备）与上行（目标设备 → 电脑）双向同时工作，单包最大 251 字节 |
 | 🎯 **一键下载（ST ISP）** | 电脑端发单字节 `0x7F` 时，从机会自动拉 `BOOT`/`RESET` 时序把目标 MCU 拽进 Bootloader，再转发该字节，配合 Flash Loader / STM32CubeProgrammer 可实现**免手动按键下载** |
-| 🔗 **绑定与回连** | 首次连接要求靠近（RSSI > -35 dBm）配对，之后自动回连；从机把绑定信息存在 Flash 里，掉电不丢 |
+| 🔗 **严格绑定与回连** | 首次配对要求**贴近**（RSSI > -58 dBm），之后自动回连；**主机与从机各自把绑定信息存进 Flash**（掉电不丢），只有两侧绑定值完全一致才互认，杜绝"任意新主机接走已绑定的从机" |
+| 🔓 **连续重启解绑** | **换主机不必再刷固件**：从机连续快速重启 5 次即解绑（见「七、3 解绑（更换主机）」） |
+| 💡 **LED 状态指示** | 未连接**快闪**（200 ms 周期）；连接成功**熄灭**；收发数据时亮 80 ms |
 | 📶 **自适应主频** | 从机检测到波特率处于 400 kbps ~ 1 Mbps 时自动把系统时钟切到 100 MHz，否则用 24 MHz，兼顾高速与功耗 |
-| 🧩 **干扰共存** | 2.4G 私有协议（非 BLE 连接态），随机接入地址 + 随机信道（0~63），多套设备同场可并存 |
+| 🧩 **干扰共存** | 2.4G 私有协议（非 BLE 连接态），接入地址随机、连接频点从候选表 `{74, 76, 78}`（WiFi 之上）里挑，多套设备同场可并存 |
 
 ### 链路示意
 
@@ -111,7 +114,7 @@ RF_Cmake/
 | `PA1` | UART RXD | 接目标板的 **TX** |
 | `PA2` | `RESET_PIN` | 一键下载用，接目标板 **RESET**（默认功能，`DTR_RTS_FUNC` 置 1 时改为 DTR） |
 | `PA3` | `BOOT_PIN` | 一键下载用，接目标板 **BOOT0**（`DTR_RTS_FUNC` 置 1 时改为 RTS） |
-| `PA7` | LED | 数据收发指示（收到数据翻转） |
+| `PA7` | LED | 未连接**快闪**（200 ms 周期）/ 连接成功**熄灭** / 收发数据亮 80 ms |
 | 两线调试口 | WCH-Link | 烧写 / 调试；固件运行时会关闭两线调试功能（`RB_PIN_DEBUG_EN`）以复用引脚 |
 
 - 默认串口参数：**115200-8-N-1**，上电后会被电脑端设置覆盖。
@@ -122,11 +125,13 @@ RF_Cmake/
 | 引脚 | 功能 | 说明 |
 |---|---|---|
 | `USB D+ / D-` | USB 2.0 全速 | 枚举为虚拟串口，默认 VID `0x1A86` / PID `0x7523`，产品名 `USB2.0 To Serial Port` |
-| `PA7` | LED | 工作指示 |
+| `PA7` | LED | 同从机：未连接快闪 / 连接成功熄灭 / 收发数据亮 80 ms |
 | `PA3` / `PA2` | 调试串口 TXD / RXD | 仅在 `DEBUG` 宏打开时存在（本工程 CMake 里已带 `-DDEBUG`），打印启动信息与 RF 库版本 |
 | 两线调试口 | WCH-Link | 烧写 / 调试 |
 
 > **USB 工作模式**：`RF_UartDongle/APP/usb_uart.c` 里的 `USB_WORK_MODE` 默认是 `USB_VENDOR_MODE`（CH341 兼容，Linux 免驱）。若想改成标准 CDC-ACM，把它改成 `USB_CDC_MODE` 重新编译即可。
+>
+> **枚举策略**：主机**未与从机连接时不初始化 USB**（PC 上看不到设备），连接成功才 `USB_Init()` 枚举出虚拟串口、断开则 `USB_DeInit()` 收回；断开判定有 **3 秒去抖**，避免信号临界时 USB 反复枚举（PC 上设备反复插拔）。
 
 ---
 
@@ -137,17 +142,24 @@ RF_Cmake/
 | 参数 | 值 | 位置 |
 |---|---|---|
 | 广播频点 | `DEF_FREQUENCY = 17` | `rf.h` |
+| 连接频点候选表 | `{74, 76, 78}`（`CH_HOP_TBL`，在 WiFi ch1/6/11 之上，由 `serverData` 取模挑选） | `rf.h` |
 | PHY | 2M（`PHY_MODE_PHY_2M` / `CONN_PHY_TYPE = 1`） | `rf.h` / `rf_uart_rx.h` |
 | 接入地址（未绑定时） | `0x57250425` | `rf.h` |
 | 绑定请求间隔 | 20 ms（`ADV_INTERVAL`） | `rf_uart_tx.h` |
-| 首次绑定条件 | RSSI > -35 dBm（需靠近） | `rf_uart_rx.c` |
+| 首次绑定条件 | RSSI > **-58 dBm**（需贴近，实测校准；非首次则要求两侧 `serverData` 完全一致，不看 RSSI） | `rf_uart_rx.c` |
 | 连接间隔 | 10 ms（`CONN_INTERVAL`） | `rf_uart_rx.h` |
 | 断连超时 | 100 × 10 ms = 1 s（`CONN_TIMEOUT`） | `rf_uart_rx.h` |
 | 单包最大数据 | 251 字节（`DATA_LEN_MAX_TX`） | `rf.h` |
-| 发射功率 | 0 dBm（`LL_TX_POWEER_0_DBM`） | `rf.c` |
-| 绑定信息存储 | 从机 Flash 偏移 `1024*236`（4 KB 扇区，`0x55AA` + `serverData`） | `rf_uart_tx.h` |
+| 发射功率 | **+7 dBm**（`LL_TX_POWEER_7_DBM`，芯片最高档，EIRP ≈ +9 dBm，限值 20 dBm） | `rf.c` |
+| 绑定信息存储 | **两端各自**存自己 Flash 偏移 `1024*236`（4 KB 扇区；8 字节：`head=0x55AA` + `serverData` + `bootCount` + 格式魔数 `0xA55A`） | `rf_uart_tx.h` / `rf_uart_rx.c` |
 
-**连接流程**：从机周期性广播 `PKT_CMD_BOUND_REQ` → 主机校验通过后回 `PKT_CMD_BOUND_RSP`（随机接入地址、随机信道 = `serverData & 0x3F`、PHY、间隔、超时）→ 双方切到该接入地址通信。此后**从机主动轮询** `PKT_CMD_GET_STATUS`，主机在应答里捎带线码设置或下行数据，从机则用 `PKT_DATA_FLAG` 把上行数据推给主机，主机回 `PKT_DATA_RSP_ACK`。
+**连接流程**：从机周期性广播 `PKT_CMD_BOUND_REQ`（携带自己记着的 `serverData`）→ 主机校验通过后回 `PKT_CMD_BOUND_RSP`（随机接入地址、候选表里挑的信道、PHY、间隔、超时）→ 双方切到该接入地址通信。此后**从机主动轮询** `PKT_CMD_GET_STATUS`，主机在应答里捎带线码设置或下行数据，从机则用 `PKT_DATA_FLAG` 把上行数据推给主机，主机回 `PKT_DATA_RSP_ACK`。
+
+**校验规则（严格绑定）**：
+
+- 从机带来的 `serverData != 0`（回连）→ 必须与本机记录的**完全一致**才接受，否则打印 `reject.. local=xxxx remote=xxxx`；
+- 从机带来的 `serverData == 0`（未绑定 / 首次）→ 要求 **RSSI > -58 dBm**（贴近），用"物理靠近"来人工指定连哪一台；
+- 绑定值**只在建链成功那一刻**才写 Flash：配对阶段从机反复广播、主机反复应答，若每应答一次就落盘，两侧最终保存的可能是不同那一次，从而永久 `reject`。
 
 ---
 
@@ -227,16 +239,21 @@ cmake --build build -j"$(nproc)"
 
 | 工程 | FLASH | RAM |
 |---|---|---|
-| `RF_Uart`（从机） | 9.8 KB / 240 KB（4.1%） | 11.4 KB / 12 KB（**92.6%**） |
-| `RF_UartDongle`（主机） | 19.5 KB / 240 KB（7.9%） | 9.7 KB / 12 KB（78.7%） |
+| `RF_Uart`（从机） | 12.1 KB / 240 KB（4.9%） | 11.7 KB / 12 KB（**95.4%**） |
+| `RF_UartDongle`（主机） | 21.3 KB / 240 KB（8.7%） | 9.9 KB / 12 KB（80.7%） |
 
-从机的 RAM 余量已经很小（3 KB 的串口环形缓冲区占了大头），改动缓冲区大小前请先看 `.map`。
+从机的 RAM 余量**只剩约 0.5 KB**（3 KB 串口环形缓冲区 + 在 RAM 里执行的 `.highcode` 段占了大头）。
+加全局变量 / 加大缓冲、或往时序敏感路径加代码前，先看 `build/*.map`：实测 RAM 到 96% 出头就会"编得出但跑不稳"。
 
 ---
 
 ## 六、烧录
 
 两颗芯片都是 **CH570Q**，用 **WCH-Link** 通过两线调试口烧写。**两个固件都要烧，别烧错**：主机烧 `RF_UartDongle`，从机烧 `RF_Uart`。
+
+> **预编译固件**：不想自己编译的话，直接到 [Releases](https://github.com/SeaHi-Mo/Seahi-Serial-AirTTL/releases) 下载 —— `RF_Uart_vX.Y.Z.hex`（从机）、`RF_UartDongle_vX.Y.Z.hex`（主机）；每个版本"相对上一版改了什么"都写在 Release 说明里。
+>
+> ⚠️ 用 **ISP 串口工具（Windows `WchIspStudio` 等）**烧写时，**不要勾「全片擦除」** —— 会清掉 Flash 末尾 `0x3B000` 的绑定信息（解绑计数正依赖它）。另外 ISP 接线是「**同名相接**」：CH570 的 TXD 接 TTL 的 TXD、RXD 接 RXD，**仅烧录时如此**（正常透传仍是交叉接法）。
 
 ### 方式一：MounRiver Studio 图形界面（推荐）
 
@@ -291,13 +308,17 @@ cd RF_Uart
 
 ### 2. 上电与配对
 
-1. 从机接好线并供电，主机插到电脑 USB 口；
-2. **首次配对请把主机和从机靠近**（RSSI > -35 dBm，基本是贴在一起），配对成功后从机 LED 翻转、串口打印 `bound success.`；
-3. 之后双方会自动回连，从机把绑定信息存在 Flash 里，掉电重启也能回连。
+1. 从机接好线并供电，主机插到电脑 USB 口 —— **此时 PC 上还看不到串口**，主机要等配对成功才枚举 USB；
+2. **首次配对请把主机和从机贴近**（RSSI > -58 dBm，几厘米内），配对成功后两端 LED 熄灭、主机调试口打印 `bound success.`；
+3. 之后双方自动回连：**两侧各自把绑定信息存在 Flash 里**，掉电重启也能回连；
+4. 换主机不需要刷固件，按下一节「解绑」操作即可。
+
+> **严格绑定**：主机记得自己绑的是哪台从机，从机也记得自己绑的是哪台主机。非首次连接只有 `serverData` 完全一致才接受，拒绝时打印 `reject.. local=xxxx remote=xxxx`。
+> 因此**升级固件时建议两颗一起烧** —— 混用版本可能因绑定值不匹配而一直 `reject`（真遇到了，先按「解绑」给从机解绑再重新配对）。
 
 ### 3. 解绑（更换主机）
 
-绑定信息存在从机 Flash 里，**换主机不必再刷固件** —— 用「连续快速重启」即可解绑：
+绑定信息**两侧各自存一份**，而换主机要解的是**从机**那一份 —— 不必再刷固件，用「连续快速重启」即可解绑：
 
 1. 从机**上电后在 15 秒内断电**，如此**连续 5 次**；
 2. 第 5 次上电时执行解绑：LED **常亮 2 秒**表示已解绑，随后进入未绑定状态（LED 快闪）；
@@ -324,6 +345,7 @@ minicom -D /dev/ttyUSB0 -b 115200
 screen /dev/ttyUSB0 115200
 ```
 
+- **配对成功前看不到 `/dev/ttyUSB*` 是正常现象**：主机未与从机连接时不枚举 USB；连上才出现，断开（需约 3 秒去抖确认）后立即收回。
 - Linux 内核自带 `ch341` 驱动，插上即用；Windows 需要装 `CH341SER` 驱动。
 - **在串口工具里改波特率/数据位/停止位/校验位，从机会自动跟随**（无线下发），无需重新烧写。支持范围受目标设备限制；从机在 400 kbps ~ 1 Mbps 区间会自动切到 100 MHz 主频。
 - 若上位机是带「一键下载」的烧写工具（Flash Loader、STM32CubeProgrammer 的 UART 模式等），握手字节 `0x7F` 会触发从机的 `RESET`/`BOOT` 时序，把目标 MCU 拽进 Bootloader，**省掉手动按 BOOT 键**。
@@ -334,9 +356,11 @@ screen /dev/ttyUSB0 115200
 
 | 现象 | 排查方向 |
 |---|---|
-| 没有 `/dev/ttyUSB*` | `dmesg \| tail` 看有无 `ch341` 枚举记录；确认插的是主机（`RF_UartDongle`）而不是从机；换数据线/换 USB 口 |
+| 没有 `/dev/ttyUSB*` | **先确认主机与从机已配对**（未配对时主机有意不枚举 USB）；再 `dmesg \| tail` 看有无 `ch341` 枚举记录；确认插的是主机（`RF_UartDongle`）而不是从机；换数据线/换 USB 口 |
 | 串口打印 `reject.. rssi=-xx` | 首次配对距离太远，把主机与从机靠近后重新上电；或从机 Flash 里已有旧绑定信息，先按「七、3 解绑」解绑再配对 |
 | 连续重启 5 次也不解绑 | 每次上电必须**在 15 秒内断电**（跑满 15 秒即清零计数）；LED 短闪 N 次就是当前计数，一直只闪 1 次说明每次都被清零了；解绑只对**已绑定**的从机生效 |
+| `reject.. local=xxxx remote=xxxx` | 严格绑定生效：主机记录的绑定值与从机带来的不一致（常见于两侧固件版本混用、或换过主机 / 从机）。先按「七、3 解绑」给从机解绑，再贴近重新配对 |
+| 配对成功前 PC 上看不到串口 | **有意设计**：主机未与从机连接时不枚举 USB，配对成功才出现虚拟串口，断开立即收回 |
 | 一直连不上 | 两个固件的无线参数是否一致（频点/PHY/接入地址常量）、是否同批固件；确认从机与主机都刷新过 |
 | 波特率不对 / 乱码 | 电脑端串口工具的设置会下发到从机，检查是否被上层工具改过；目标设备的实际线码要与之一致 |
 | 编译报找不到编译器 | 先确认子模块已拉取：`git submodule update --init --recursive`，`tools/toolchain/bin/riscv-wch-elf-gcc` 应存在；也可用 `-DTOOLCHAIN_FOLDER` 指向别的含 `bin/riscv-wch-elf-gcc` 的目录（别用发行版 / xPack 工具链） |
