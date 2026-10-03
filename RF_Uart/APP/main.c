@@ -45,8 +45,8 @@ int main(void)
     PRINT("start.\n");
     PRINT("%s\n", VER_RF_LIB);
     RFRole_Init( );
-    RF_UartTxInit( );
-    LedTimerInit( );            /* 标定 LED 时基：周期 = LED_BLINK_MS*2 ms */
+    LedTimerInit( );            /* 先标定 LED 时基：下面的启动计数提示要用真实毫秒延时 */
+    RF_UartTxInit( );           /* 内含「连续重启 N 次解绑」的上电计数/解绑 */
     process_main();
 }
 

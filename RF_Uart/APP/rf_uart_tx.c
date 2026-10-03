@@ -27,7 +27,8 @@ uint16_t gTimeout;
 uint16_t gServerData;
 
 uint8_t gTxDataSeq;
-static uint8_t gBootCountPending = 0;   /* 启动计数已写 Flash，待正常运行后清零 */
+static uint16_t gBootCount = 0;         /* 连续快速重启计数：非 0 = 待清零（跑满窗口由主循环清） */
+static uint8_t  gUnbindBoot = 0;        /* 本次上电刚完成解绑：本轮不配对，让"已解绑"状态可见 */
 uint8_t gRfStatus;
 uint8_t gBoundStatus;
 uint8_t getDataProbe;
@@ -127,7 +128,11 @@ static void rf_bound( bound_rsp_t *rsp )
     rf_rx_set_phy_type( rsp->phy );
     info.head = 0x55aa;
     info.serverData = gServerData;
-    info.bootCount = 0;                 /* 绑定成功即清零启动计数 */
+    /* 【不要在这里清零启动计数！】绑定成功 != 正常使用：换主机时旧主机往往还插在
+     * 电脑上，从机每次上电都先回连成功；一旦在这里清零，5 次重启永远攒不够，
+     * 表现就是"怎么重启都解不了绑、只能刷固件"。
+     * 计数只由"上电后连续运行满 BOOT_FAST_RESET_SEC 秒"清零（rfBootCountClearTask）。 */
+    info.bootCount = gBootCount;
     info.resv = BOOT_CNT_MAGIC;
     rfSaveBoundInfo( &info );
 
@@ -180,7 +185,13 @@ static void rfProcessRx( rfPackage_t *pPkt )
         }
         else if( pPkt->type == PKT_CMD_BOUND_RSP )
         {
-            rf_bound( (bound_rsp_t *)(pPkt+1) );
+            /* 本轮刚解绑：先不接受任何配对 —— 让"已解绑"状态稳定可见，
+             * 也避免被旁边还开着的旧主机立刻绑回去（否则看起来就像没解绑）。
+             * 下次上电 gUnbindBoot 自动归零，即可正常配新主机。 */
+            if( !gUnbindBoot )
+            {
+                rf_bound( (bound_rsp_t *)(pPkt+1) );
+            }
         }
         else if( pPkt->type == PKT_CMD_RSP_STATUS )
         {
@@ -522,6 +533,8 @@ void RF_StatusQuery( void )
 {
     uint8_t s;
 
+    rfBootCountClearTask();     /* 【连续重启 N 次解绑】跑满窗口即清零启动计数 */
+
     /* ---- 连接状态去抖 ---- */
     {
         uint32_t now = SysTick->CNT;
@@ -749,12 +762,45 @@ static int rfSaveBoundInfo( rfBoundInfo_t *info )
 }
 
 /*******************************************************************************
+ * @fn      rfLedDelayMs
+ *
+ * @brief   启动提示用的"真实毫秒"延时。
+ *
+ *          mDelaymS() 是按编译期 FREQ_SYS=100MHz 标定的软件循环，而从机实际跑
+ *          24MHz，同样的循环会长约 3 倍 —— 用它做"数几次"的提示根本不准。
+ *          这里用 LedTimerInit() 标定过的 SysTick，必须在 LedTimerInit() 之后调用。
+ *
+ * @param   ms 毫秒数
+ * @return  None.
+ */
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+static void __attribute__((noinline)) rfLedDelayMs( uint32_t ms )
+{
+    uint32_t t0;
+
+    if( gLedTicksPerMs == 0 )       /* 时基还没标定：退回软件延时，避免死循环 */
+    {
+        mDelaymS( (uint16_t)ms );
+        return;
+    }
+    t0 = SysTick->CNT;
+    while( (uint32_t)( SysTick->CNT - t0 ) < LedMsToTicks( ms ) )
+    {
+    }
+}
+#endif
+
+/*******************************************************************************
  * @fn      rfBootCountStartup
  *
- * @brief   上电维护「连续快速启动计数」：达到 BOOT_UNBIND_TIMES 次即解绑。
+ * @brief   上电维护「连续快速重启计数」：达到 BOOT_UNBIND_TIMES 次即解绑。
+ *
+ *          清零只有一条途径 —— 主循环里"跑满 BOOT_FAST_RESET_SEC 秒"
+ *          （rfBootCountClearTask）；**绝不因为配对成功而清零**，原因此处不再赘述，
+ *          见 rf_bound() 里的注释（那正是"怎么重启都不解绑"的根因）。
  *
  *          刻意**不加** __HIGH_CODE：本函数只在启动阶段跑一次（含 Flash 擦写），
- *          放进 .highcode 会白占 RAM（从机 RAM 已到 93.9%，96% 即跑不稳）。
+ *          放进 .highcode 会白占 RAM。
  *
  * @return  None.
  */
@@ -776,69 +822,65 @@ static void __attribute__((noinline)) rfBootCountStartup( void )
         bootCnt     = 0;
     }
 
-#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
-    /* 【诊断】上电时 LED 快闪 bootCnt 次，肉眼即可确认"有没有从 Flash 读到计数"：
-     *   一次都不闪 = 读到 0（写入失败 / 首启 / 魔数不匹配）
-     *   闪 N 次     = 读到了 N 次连续快速重启
-     * 验证通过后可以删掉这段。 */
+    /* 本来就没绑定时无"解绑"可言：不计数、不写 Flash（省擦写，也免得在未绑定时
+     * 给出"解绑"提示把人搞糊涂）。 */
+    if( gServerData == 0 )
     {
-        uint16_t i;
-        for( i = 0; i < bootCnt; i++ )
-        {
-            GPIOA_SetBits( LED_PIN );
-            mDelaymS( 300 );
-            GPIOA_ResetBits( LED_PIN );
-            mDelaymS( 400 );
-        }
+        gBootCount = 0;
+        return;
     }
-#endif
 
-    /* 【纯计数判定，不依赖运行时长】
-     * 早期版本是"跑满 N 秒即清零"，但那个时间窗口把操作难度拉满：上电后
-     * 必须极短时间内断电，稍慢一点计数就被清掉，表现为"怎么试都不解绑"。
-     * 现在只有一条清零途径 —— 配对成功（rf_bound 里），因此：
-     *   · 正常使用（上电即配对成功）→ 每次归零，永不误解绑；
-     *   · 想解绑（上电但配不上，例如主机断电）→ 计数只增，第 5 次必解绑。 */
     if( (uint16_t)(bootCnt + 1) >= BOOT_UNBIND_TIMES )
     {
         /* 连续快速重启达到阈值 → 解绑：清掉绑定信息并把计数归零 */
         PRINT("reboot %d times -> unbind.\n", bootCnt + 1);
         gServerData = 0;
-#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
-        /* 解绑成功提示：常亮 2 秒后熄灭。
-         * 原先用"100ms/100ms 快闪 3 次"（共 0.6s）—— 人眼虽能看出在闪，但
-         * 0.6 秒内数清 3 次几乎不可能，且与启动慢闪（300/400ms）靠频率区分也吃力。
-         * 改用"一个长亮条"作为模式，与"启动慢闪 N 次""失败急促闪"截然不同。 */
-        {
-            GPIOA_SetBits( LED_PIN );
-            mDelaymS( 2000 );
-            GPIOA_ResetBits( LED_PIN );
-        }
-#endif
+        gBootCount  = 0;
+        gUnbindBoot = 1;            /* 本轮不再配对，见 rfProcessRx() */
         info.head       = 0;
         info.serverData = 0;
         info.bootCount  = 0;
         info.resv       = 0;
         rfSaveBoundInfo( &info );
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+        /* 解绑成功提示：常亮 2 秒（与"启动短闪 N 次""失败急促闪"截然不同的模式） */
+        GPIOA_SetBits( LED_PIN );
+        rfLedDelayMs( 2000 );
+        GPIOA_ResetBits( LED_PIN );
+#endif
     }
     else
     {
-        /* 记录本次启动(+1)。注意：只有"配对成功"才清零（见 rf_bound），
-         * 已不再有"跑满 N 秒自动清零"的机制 —— 那个时间窗口曾导致
-         * "怎么试都不解绑"。 */
+        /* 记录本次启动(+1)。清零只走"跑满窗口"那条路（rfBootCountClearTask），
+         * 不再有"配对成功即清零"，也不再有"上电后极短时间必须断电"的窄窗口。 */
+        gBootCount = bootCnt + 1;
         info.head       = BOUND_INFO_HEAD;
         info.serverData = gServerData;
-        info.bootCount  = bootCnt + 1;
+        info.bootCount  = gBootCount;
         info.resv       = BOOT_CNT_MAGIC;
         rfSaveBoundInfo( &info );
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+        /* 启动提示：短闪 gBootCount 次 —— 使用者据此判断"计数有没有在涨"。
+         * 此前完全没有反馈，操作时根本不知道自己到了第几次。 */
+        {
+            uint16_t i;
+            for( i = 0; i < gBootCount; i++ )
+            {
+                GPIOA_SetBits( LED_PIN );
+                rfLedDelayMs( 100 );
+                GPIOA_ResetBits( LED_PIN );
+                rfLedDelayMs( 250 );
+            }
+        }
+#endif
     }
 }
 
 /*******************************************************************************
  * @fn      rfBootCountClearTask
  *
- * @brief   主循环任务：正常运行满 BOOT_FAST_RESET_SEC 秒即把启动计数清零，
- *          这样只有"上电后很快又断电"才会累积到解绑阈值。
+ * @brief   主循环任务：上电后连续运行满 BOOT_FAST_RESET_SEC 秒即把启动计数清零，
+ *          这样只有"上电后很快又断电"（快速重启）才会累积到解绑阈值。
  *          同样刻意不加 __HIGH_CODE（时序不敏感），省 RAM。
  *
  * @return  None.
@@ -846,11 +888,13 @@ static void __attribute__((noinline)) rfBootCountStartup( void )
 static void __attribute__((noinline)) rfBootCountClearTask( void )
 {
     static uint32_t bootRefTick = 0;
-    uint32_t       now;
+    rfBoundInfo_t  *pInfo = (rfBoundInfo_t *)(BOUND_INFO_FLASH_ADDR);
     rfBoundInfo_t  info;
+    uint32_t       now;
 
-    if( !gBootCountPending )
+    if( gBootCount == 0 )
     {
+        bootRefTick = 0;
         return;
     }
 
@@ -864,9 +908,13 @@ static void __attribute__((noinline)) rfBootCountClearTask( void )
         return;
     }
 
-    gBootCountPending = 0;
+    /* 跑满窗口 = 正常使用（不是快速重启）→ 清零计数。
+     * 绑定值以 Flash 当前内容为准：这十几秒里 rf_bound() 可能刚写入新值，
+     * 不能拿上电时读到的旧 gServerData 覆盖回去。 */
+    gBootCount  = 0;
+    bootRefTick = 0;
     info.head       = BOUND_INFO_HEAD;
-    info.serverData = gServerData;
+    info.serverData = ( pInfo->head == BOUND_INFO_HEAD ) ? pInfo->serverData : gServerData;
     info.bootCount  = 0;
     info.resv       = BOOT_CNT_MAGIC;
     rfSaveBoundInfo( &info );
