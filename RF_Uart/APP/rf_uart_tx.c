@@ -690,13 +690,15 @@ void RF_StatusQuery( void )
 static void rfFlashFailAlarm( void )
 {
 #if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+    /* 急促闪 20 次（100ms/100ms，共 4 秒）：时长够长、节奏够急，
+     * 与"启动慢闪 300/400ms"和"解绑常亮 2 秒"都不会混淆。 */
     uint8_t i;
-    for( i = 0; i < 10; i++ )
+    for( i = 0; i < 20; i++ )
     {
         GPIOA_SetBits( LED_PIN );
-        mDelaymS( 60 );
+        mDelaymS( 100 );
         GPIOA_ResetBits( LED_PIN );
-        mDelaymS( 60 );
+        mDelaymS( 100 );
     }
 #endif
 }
@@ -803,17 +805,14 @@ static void __attribute__((noinline)) rfBootCountStartup( void )
         PRINT("reboot %d times -> unbind.\n", bootCnt + 1);
         gServerData = 0;
 #if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
-        /* 解绑瞬间快闪 3 次：让用户能确认"解绑真的发生了"。
-         * 从机 DEBUG 默认关闭，否则只能靠主机日志的 serverData 变化间接判断。 */
+        /* 解绑成功提示：常亮 2 秒后熄灭。
+         * 原先用"100ms/100ms 快闪 3 次"（共 0.6s）—— 人眼虽能看出在闪，但
+         * 0.6 秒内数清 3 次几乎不可能，且与启动慢闪（300/400ms）靠频率区分也吃力。
+         * 改用"一个长亮条"作为模式，与"启动慢闪 N 次""失败急促闪"截然不同。 */
         {
-            uint8_t k;
-            for( k = 0; k < 3; k++ )
-            {
-                GPIOA_SetBits( LED_PIN );
-                mDelaymS( 100 );
-                GPIOA_ResetBits( LED_PIN );
-                mDelaymS( 100 );
-            }
+            GPIOA_SetBits( LED_PIN );
+            mDelaymS( 2000 );
+            GPIOA_ResetBits( LED_PIN );
         }
 #endif
         info.head       = 0;
