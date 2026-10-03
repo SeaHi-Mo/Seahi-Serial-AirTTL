@@ -36,7 +36,7 @@ rfPackage_t *pPkt_t;
 
 static void rfProcessRx( rfPackage_t *pPkt );
 static void rfProcessTx( void );
-static void rfSaveBoundInfo( rfBoundInfo_t *info );
+static void __HIGH_CODE rfSaveBoundInfo( rfBoundInfo_t *info );
 static void __attribute__((noinline)) rfBootCountStartup( void );
 static void __attribute__((noinline)) rfBootCountClearTask( void );
 static void rfProcessTimeout( void );
@@ -674,6 +674,10 @@ void RF_StatusQuery( void )
  *
  * @brief   擦除并写入绑定信息，写后用 FLASH_ROM_VERIFY 校验，失败重试。
  *
+ *          ★ 必须 __HIGH_CODE：Flash 擦写期间 CPU 取指受影响，操作代码要在 RAM
+ *          （.highcode 段）里执行 —— 原厂 rf_bound() 也是这么做的。此前为省 RAM
+ *          把它排除在 .highcode 外，导致写入静默失败（绑定与 bootCount 都留不住）。
+ *
  *          Flash 写入的硬约束：**源 Buffer 必须在 RAM 且 4 字节对齐**。
  *          rfBoundInfo_t 已加 aligned(4)；这里再加 VERIFY 兜底，避免出现
  *          "擦掉了却没写进去"，使 bootCount 永远从 0 开始、解绑阈值达不到。
@@ -681,7 +685,7 @@ void RF_StatusQuery( void )
  * @param   info 待写入的绑定信息（RAM，4 字节对齐）
  * @return  None.
  */
-static void rfSaveBoundInfo( rfBoundInfo_t *info )
+static void __HIGH_CODE rfSaveBoundInfo( rfBoundInfo_t *info )
 {
     int tries;
 
