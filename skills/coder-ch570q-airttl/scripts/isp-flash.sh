@@ -177,9 +177,11 @@ echo
 # 所以等待模式下反复重试，让用户有机会给 MCU 上电。
 run_once() {
     set +e
-    $SUDO "$TOOL" -p "$LINK" -b "$BAUD" -c "$CFG" -o "$OP" -f "$FW"
+    OUT=$($SUDO "$TOOL" -p "$LINK" -b "$BAUD" -c "$CFG" -o "$OP" -f "$FW" 2>&1)
     RC=$?
     set -e
+    # 输出先捕获、不直接透传：等待期间逐次透传会把工具头部刷屏。
+    # 需要完整输出时设 ISP_VERBOSE=1。
     return "$RC"
 }
 
@@ -188,25 +190,42 @@ if [ "${WAIT:-0}" -gt 0 ] 2>/dev/null; then
     echo "▶ 等待模式：${WAIT}s 内反复尝试；请现在给 MCU 上电（或复位）"
     echo
     deadline=$(( $(date +%s) + WAIT ))
+    t0=$(date +%s)
+    attempt=0
+    last=""
     while :; do
+        attempt=$((attempt + 1))
         run_once || RC=$?
-        [ "$RC" -eq 0 ] && break
+        if [ "$RC" -eq 0 ]; then
+            echo "$OUT" | grep -E '"Status"' | sed 's/^/  /'
+            echo
+            break
+        fi
+        # 只在错误码变化时打一行，其余用 \r 原地刷新，避免刷屏
+        cur=$(printf '%s' "$OUT" | grep -o '"Code":[0-9]*' | tail -1 | grep -o '[0-9]*')
+        if [ "$cur" != "$last" ]; then
+            [ -n "$last" ] && echo
+            printf '  状态码 %s  %s\n' "${cur:-?}" "$(printf '%s' "$OUT" | grep -o '"Message":"[^"]*"' | tail -1)"
+            last="$cur"
+        fi
+        printf '\r  第 %d 次尝试… 已等 %ss/%ss        ' "$attempt" "$(( $(date +%s) - t0 ))" "$WAIT"
         # 5=未枚举到设备、7=串口开了但读不到芯片信息 —— 两者都是"还没进 BOOT"的典型表现
         # （BOOT 只在上电瞬间存在），所以都要在等待窗口内继续重试。
         case "$RC" in
             5|7) ;;
-            *)   break ;;
+            *)   echo; break ;;
         esac
-        [ "$(date +%s)" -ge "$deadline" ] && break
+        if [ "$(date +%s)" -ge "$deadline" ]; then echo; break; fi
         # 工具自身会 "Wait isp dev timeout" 约 2 秒（实测单次运行 2.05s），
-        # 所以这里不必再 sleep —— 去掉后监听无空档，覆盖率 100%。
-        :
+        # 无需再 sleep，监听便无空档。
     done
 else
     run_once || RC=$?
+    echo "$OUT"
 fi
 
 echo
+[ "${ISP_VERBOSE:-0}" = "1" ] && printf '%s\n' "$OUT"
 case "$RC" in
     0)  echo "✅ 操作成功（状态码 0）" ;;
     4)  echo "❌ 串口名称无效（状态码 4）—— 检查 $LINK 软链接" ;;
