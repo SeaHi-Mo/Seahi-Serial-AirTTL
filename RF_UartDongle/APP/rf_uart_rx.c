@@ -68,6 +68,19 @@ uint8_t gRfStatus;
 uint8_t gBoundStatus;
 uint8_t gRxDataStatus;
 
+/* ---- 【下行丢包重发】--------------------------------------------------------
+ * 下行数据是"主机应答从机轮询"捎带发出的（PKT_CMD_RSP_STATUS / PKT_DATA_RSP_ACK）。
+ * 承载数据的那一包若在空中丢了，从机会用**同一个 seq** 重发轮询；原来的实现
+ * 只回一个空 ACK —— 那 100 字节（主机已经从 USB 取走了）就永久消失。
+ * 实测 1.5M 轻载（100 B/s）下约 1.08%（10/900）的帧就是这么丢的，而且主机
+ * 的 CRC 回调不打印、链路也没断，两边都看不见。
+ * 现在把最近一次"带下行数据"的应答原样缓存，遇到从机重发同一个 seq 就重发它，
+ * 让重试机制真能把数据救回来。
+ * 不会重复投递：从机只有在没收到有效应答时才会重发同一个 seq；而主机的
+ * gDataSeq 与从机的 gTxDataSeq 严格同步推进，不存在"旧缓存隔 256 个 seq 误命中"。 */
+static uint8_t gLastDataRsp[BUF_LEN_TX];
+static uint8_t gLastDataRspLen = 0;     /* 0 = 当前没有可重发的下行包 */
+
 static void rfProcessRx( rfPackage_t *pPkt );
 static void rfProcessTx( void );
 static void rfProcessCrcError( void );
@@ -133,6 +146,49 @@ uint32_t rf_rand_aa( uint16_t rand )
 }
 
 /*******************************************************************************
+ * @fn      rfCacheDownlink
+ *
+ * @brief   把刚组装好、带下行数据的应答缓存一份，供"从机重发同一 seq"时原样重发。
+ *
+ *          刻意 noinline 且**不加** __HIGH_CODE：调用点 rfProcessRx() 在 .highcode(RAM)，
+ *          内联进去会白占 RAM；本函数只做一次拷贝，时序不敏感。
+ *
+ * @param   pPkt 组装好的发送包（gTxBuf.TxBuf）
+ * @return  None.
+ */
+static void __attribute__((noinline)) rfCacheDownlink( rfPackage_t *pPkt )
+{
+    if( pPkt->length <= sizeof(gLastDataRsp) )
+    {
+        __MCPY( gLastDataRsp, pPkt, (uint8_t *)pPkt + pPkt->length );
+        gLastDataRspLen = pPkt->length;
+    }
+}
+
+/*******************************************************************************
+ * @fn      rfResendCached
+ *
+ * @brief   从机重发同一个 seq 时，把缓存的那包写回发送缓冲。
+ *
+ * @param   pPkt   刚收到的包（取它的 seq 与缓存比对）
+ * @param   pPkt_t 发送缓冲（gTxBuf.TxBuf）
+ * @return  1 = 已把缓存写回，调用者直接发即可；0 = 没命中，调用者照旧回空 ACK
+ */
+static uint8_t __attribute__((noinline)) rfResendCached( rfPackage_t *pPkt, rfPackage_t *pPkt_t )
+{
+    if( gLastDataRspLen == 0 )
+    {
+        return 0;
+    }
+    if( ((rfPackage_t *)gLastDataRsp)->seq != pPkt->seq )
+    {
+        return 0;
+    }
+    __MCPY( pPkt_t, gLastDataRsp, gLastDataRsp + gLastDataRspLen );
+    return 1;
+}
+
+/*******************************************************************************
  * @fn      rf_disconnect
  *
  * @brief   断开连接
@@ -155,6 +211,7 @@ static void rf_disconnect( void )
     rf_rx_set_sync_word( AA );
     rf_rx_set_frequency( DEF_FREQUENCY );
     gRfStatus = RF_STATUS_WAIT;
+    gLastDataRspLen = 0;        /* 重连后序号从 0 起，旧缓存必须作废 */
     /* 【注意】此处不能清 gServerData：断开连接 != 解除绑定。
      * 之前每次断开都清零，主机一掉线就"失忆"，任何从机都能重新接上。 */
 }
@@ -180,6 +237,7 @@ static void rf_bound( bound_rsp_t *rsp )
     rf_rx_set_frequency( rsp->channel );
     rf_rx_set_phy_type( rsp->phy );
     RF_bound_Flag = 1;
+    gLastDataRspLen = 0;        /* 新绑定：gDataSeq 归零，旧缓存作废 */
     PRINT("bound success.%X %x\n",rsp->accessaddr,rsp->channel );
     /* 建链成功才持久化：此时采用的 serverData 与从机保存的必然一致 */
     rfSaveServerData( );
@@ -317,6 +375,7 @@ static void rfProcessRx( rfPackage_t *pPkt )
                         pPkt_t->seq = gDataSeq;
                         pPkt_t->resv = 0;
                         gRfTxCount += len;
+                        rfCacheDownlink( pPkt_t );      /* 缓存，供丢包时重发 */
                     }
                     else if( s == 0x80 )
                     {
@@ -343,13 +402,18 @@ static void rfProcessRx( rfPackage_t *pPkt )
             }
             else if( pPkt->seq == (uint8_t)(gDataSeq - 1) )
             {
-                /* 【失步保护】重复包：上次的应答丢了、从机在重传。
-                 * 数据上一次已处理过，这里只重发应答（seq 回显从机的值），
-                 * 让从机的 gTxDataSeq 能正常推进，避免两端序号永久失配死锁。 */
-                pPkt_t->length = PKT_DATA_OFFSET;
-                pRsp_t->opcode = OPCODE_ACK;
-                pPkt_t->seq = pPkt->seq;
-                pPkt_t->resv = 0;
+                /* 【失步保护 + 下行丢包重发】重复包：上次的应答丢了、从机在重传。
+                 * 若上次那包**带着下行数据**，这里原样重发它 —— 否则那部分数据就
+                 * 永久丢了（实测 1.5M 轻载下 1.08% 的帧都丢在这条路上）。
+                 * 没命中缓存（上次是空 ACK / 线码包）才回到老行为：只回空 ACK，
+                 * seq 回显从机的值，让它的 gTxDataSeq 能正常推进、避免序号失配死锁。 */
+                if( !rfResendCached( pPkt, pPkt_t ) )
+                {
+                    pPkt_t->length = PKT_DATA_OFFSET;
+                    pRsp_t->opcode = OPCODE_ACK;
+                    pPkt_t->seq = pPkt->seq;
+                    pPkt_t->resv = 0;
+                }
             }
             rf_tx_start( pPkt_t, 20 );
             if( pRsp_t->opcode == OPCODE_BSP )
@@ -378,6 +442,7 @@ static void rfProcessRx( rfPackage_t *pPkt )
                     pPkt_t->seq = gDataSeq;
                     pPkt_t->resv = 0;
                     gRfTxCount += len;
+                    rfCacheDownlink( pPkt_t );          /* 缓存，供丢包时重发 */
                 }
                 else
                 {
@@ -389,13 +454,16 @@ static void rfProcessRx( rfPackage_t *pPkt )
             }
             else if( pPkt->seq == (uint8_t)(gDataSeq - 1) )
             {
-                /* 【失步保护】同上：重复包只重发 ACK。
-                 * 该包的数据上一次已写入 USB 侧，这里重复写会导致数据重复，
-                 * 所以既不丢也不重，只是把应答补上。 */
-                pPkt_t->length = PKT_DATA_OFFSET;
-                pRsp_t->opcode = OPCODE_ACK;
-                pPkt_t->seq = pPkt->seq;
-                pPkt_t->resv = 0;
+                /* 【失步保护 + 下行丢包重发】同上：重复的**上行**包不再写入 USB 侧
+                 * （重复写会让上位机收到重复数据），但这一包的**应答里可能捎带了下行
+                 * 数据** —— 那部分若丢了同样永久消失，所以命中缓存就原样重发。 */
+                if( !rfResendCached( pPkt, pPkt_t ) )
+                {
+                    pPkt_t->length = PKT_DATA_OFFSET;
+                    pRsp_t->opcode = OPCODE_ACK;
+                    pPkt_t->seq = pPkt->seq;
+                    pPkt_t->resv = 0;
+                }
             }
             rf_tx_start( pPkt_t, 20 );
             
@@ -459,6 +527,10 @@ __HIGH_CODE
 static void rfProcessCrcError( void )
 {
     gRfStatus = RF_STATUS_WAIT;
+    /* 【诊断】CRC 错以前是**静默**的，导致"偶发丢包"在主机 log 里完全看不到
+     * （之前 1% 的帧丢失就是这么查了半天）。日志走 PA3 调试口，不碰数据线；
+     * 若环境噪声大导致刷屏，删掉这一行即可。 */
+    PRINT("crc err\n");
 }
 
 /*******************************************************************************

@@ -17,6 +17,8 @@
 
 # CMake 构建目录与中间文件
 **/build/
+# RF_TEST 按频点分目录构建（-DRFTEST_DEF_CHANNEL=36/37/38 → build_36 / build_37 / build_38）
+**/build_*/
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
@@ -35,6 +37,9 @@ desktop.ini
 
 # 本地调试记录（仅本地保留，不进仓库）
 DEBUG-NOTES.md
+
+# 丢包测试每次运行生成的报告（可重跑生成；脚本 tools/loss-test/baud100_test.py 已入库）
+tools/loss-test/baud100-*.md
 __pycache__/
 *.pyc
 
