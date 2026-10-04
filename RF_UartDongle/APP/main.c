@@ -65,7 +65,7 @@ void process_main( void )
  */
 int main(void)
 {
-    HSECFG_Capacitance( HSECap_18p );
+    HSECFG_Capacitance( HSECap_6p );   /* 频偏标定：外部 4.7pF + 片内 6p 档实测 31.999954MHz(-1.4ppm)；原为 HSECap_18p */
     SetSysClock( CLK_SOURCE_HSE_PLL_100MHz );
 #ifdef DEBUG
     GPIOA_SetBits( bTXD_0 );

@@ -39,7 +39,7 @@ void process_main( void )
  */
 int main(void)
 {
-    HSECFG_Capacitance(HSECap_18p);
+    HSECFG_Capacitance(HSECap_6p);   /* 频偏标定：原为 HSECap_18p；实测频率偏低，取最小电容档探软件边界 */
     SetSysClock(CLK_SOURCE_HSE_PLL_24MHz);
     UART_Init( );
     PRINT("start.\n");
