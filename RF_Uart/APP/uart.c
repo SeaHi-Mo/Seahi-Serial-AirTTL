@@ -282,15 +282,10 @@ void UART_Init(void)
 #endif
 
 
-// 设置DTR、RTS脚与ST——RESET、BOOT脚
-#if((defined(DTR_RTS_FUNC)) && (DTR_RTS_FUNC == TRUE))
+// PA2/PA3：DTR/RTS 或 ST 下载的 RESET/BOOT（同一对脚）
+// 都配成推挽输出并默认拉高 = "未断言 / 不复位"，避免上电就把目标按住
     GPIOA_SetBits( (DTR_PIN|RTS_PIN) );
     GPIOA_ModeCfg( (DTR_PIN|RTS_PIN), GPIO_ModeOut_PP_5mA);
-#else
-    GPIOA_SetBits( (RESET_PIN|BOOT_PIN) );
-    GPIOA_ModeCfg( (RESET_PIN|BOOT_PIN), GPIO_ModeOut_PP_5mA);
-
-#endif
 
 
 

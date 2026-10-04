@@ -78,6 +78,32 @@ static void rf_buffer_create(struct simple_buf **buf)
 }
 
 /*******************************************************************************
+ * @fn      rfApplyDtrRts
+ *
+ * @brief   把主机下发的 modem 输出位搬到 PA2/PA3（DTR/RTS）。
+ *
+ *          刻意**不加** __HIGH_CODE 且 noinline：本函数只在收到 OPCODE_BSP 时执行，
+ *          时序不敏感；而调用它的 rfProcessRx() 本身在 .highcode（RAM），
+ *          内联回去会让这几十字节白占 RAM（从机 RAM 已到 95.9%，96% 出头就不稳）。
+ *
+ * @param   ioStaus 主机下发的 modem 输出位：bit5=DTR、bit6=RTS，1 = 未断言（输出高）
+ *          —— 映射到 **DTR->PA3、RTS->PA2**（见 uart.h 的引脚定义）
+ * @return  None.
+ */
+#if((defined(DTR_RTS_FUNC)) && (DTR_RTS_FUNC == TRUE))
+static void __attribute__((noinline)) rfApplyDtrRts( uint8_t ioStaus )
+{
+    // DTR 电平状态（PA3）
+    if( ioStaus & 0x20 ) GPIOA_SetBits( DTR_PIN );
+    else                 GPIOA_ResetBits( DTR_PIN );
+
+    // RTS 电平状态（PA2）
+    if( ioStaus & 0x40 ) GPIOA_SetBits( RTS_PIN );
+    else                 GPIOA_ResetBits( RTS_PIN );
+}
+#endif
+
+/*******************************************************************************
  * @fn      rf_disconnect
  *
  * @brief   断开连接
@@ -254,24 +280,7 @@ static void rfProcessRx( rfPackage_t *pPkt )
                 }
 
 #if((defined(DTR_RTS_FUNC)) && (DTR_RTS_FUNC == TRUE))
-                // DTR 电平状态
-                if( pRsp_t->buad_t.ioStaus&0x20 )
-                {
-                    GPIOA_SetBits( DTR_PIN );
-                }
-                else
-                {
-                    GPIOA_ResetBits( DTR_PIN );
-                }
-                // RTS 电平状态
-                if( pRsp_t->buad_t.ioStaus&0x40 )
-                {
-                    GPIOA_SetBits( RTS_PIN );
-                }
-                else
-                {
-                    GPIOA_ResetBits( RTS_PIN );
-                }
+                rfApplyDtrRts( pRsp_t->buad_t.ioStaus );    /* PA3 <- DTR、PA2 <- RTS */
 #endif
             }
             else if( pRsp_t->opcode == OPCODE_DATA )
@@ -282,8 +291,12 @@ static void rfProcessRx( rfPackage_t *pPkt )
                 getDataProbe = 6;
 
 
-#if(DTR_RTS_FUNC == FALSE)
-                //RESET与BOOT引脚控制协议解析 仅在连接下载时触发
+#if(defined(ST_ISP_FUNC)) && (ST_ISP_FUNC == TRUE)
+                /* RESET/BOOT 引脚控制协议解析，仅在连接下载时触发。
+                 * 【与 DTR/RTS 直控共存】这两个脚（PA2=RESET、PA3=BOOT）平时跟随 PC 的
+                 * DTR/RTS；收到 0x7F 时由这里临时接管跑下载时序，结束时保持
+                 * "目标停在 Bootloader"的那个电平。不需要就在 uart.h 把
+                 * ST_ISP_FUNC 置 FALSE。 */
                 if(pRsp_t->other.rspData[0]==0x7f && (pPkt_t->length-PKT_DATA_OFFSET-1)==1)
                 {
                     //BOOT脚拉高、RESET低电平复位进BOOT

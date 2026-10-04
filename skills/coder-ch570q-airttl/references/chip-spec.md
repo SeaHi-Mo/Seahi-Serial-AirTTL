@@ -97,7 +97,7 @@
 | 3 | **PA0** | I/O/A | 从机：**UART TXD** |
 | 4 | **PA1** | I/O/A | 从机：**UART RXD** |
 | 5 | **PA7** | I/O/A | **LED**（`LED_PIN`） |
-| 7 | **PA3** | I/O/A | 从机：**BOOT_PIN**（`DTR_RTS_FUNC=TRUE` 时为 RTS）；主机：调试串口 TXD |
+| 7 | **PA3** | I/O/A | 从机：**BOOT_PIN / DTR_PIN**（同一只脚，默认跟随 PC 的 DTR）；主机：调试串口 TXD |
 | 8 | XO | 0/A | 外接 **32 MHz 晶体**（HSE 反相输出） |
 | 9 | XI | A | 外接 **32 MHz 晶体**（HSE 输入） |
 | 10 | ANT | A | RF 射频输入输出，建议直连天线 |

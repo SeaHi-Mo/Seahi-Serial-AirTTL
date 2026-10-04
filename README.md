@@ -112,13 +112,14 @@ RF_Cmake/
 |---|---|---|
 | `PA0` | UART TXD | 接目标板的 **RX** |
 | `PA1` | UART RXD | 接目标板的 **TX** |
-| `PA2` | `RESET_PIN` | 一键下载用，接目标板 **RESET**（默认功能，`DTR_RTS_FUNC` 置 1 时改为 DTR） |
-| `PA3` | `BOOT_PIN` | 一键下载用，接目标板 **BOOT0**（`DTR_RTS_FUNC` 置 1 时改为 RTS） |
+| `PA2` | `RESET_PIN` / `RTS_PIN` | **同一对物理引脚的两个用途**：电脑端 **RTS** 或 ST 一键下载的 **RESET**。接目标板 **RESET**（详见「七、5」） |
+| `PA3` | `BOOT_PIN` / `DTR_PIN` | 同上：电脑端 **DTR** 或 ST 一键下载的 **BOOT0**。接目标板 **BOOT0** |
 | `PA7` | LED | 未连接**快闪**（200 ms 周期）/ 连接成功**熄灭** / 收发数据亮 80 ms |
 | 两线调试口 | WCH-Link | 烧写 / 调试；固件运行时会关闭两线调试功能（`RB_PIN_DEBUG_EN`）以复用引脚 |
 
 - 默认串口参数：**115200-8-N-1**，上电后会被电脑端设置覆盖。
 - 记得 **GND 共地**。
+- **PA2/PA3 默认跟随电脑端的 DTR/RTS**（`DTR_RTS_FUNC=TRUE`）：**PA3 = DTR、PA2 = RTS**；**断言 = 输出低**，未断言 / 未配对 / 未打开串口时输出**高**。
 
 ### 主机 `RF_UartDongle`（插电脑）
 
@@ -350,6 +351,24 @@ screen /dev/ttyUSB0 115200
 - **在串口工具里改波特率/数据位/停止位/校验位，从机会自动跟随**（无线下发），无需重新烧写。支持范围受目标设备限制；从机在 400 kbps ~ 1 Mbps 区间会自动切到 100 MHz 主频。
 - 若上位机是带「一键下载」的烧写工具（Flash Loader、STM32CubeProgrammer 的 UART 模式等），握手字节 `0x7F` 会触发从机的 `RESET`/`BOOT` 时序，把目标 MCU 拽进 Bootloader，**省掉手动按 BOOT 键**。
 
+### 5. 用电脑端的 DTR/RTS 控制目标板
+
+`DTR_RTS_FUNC` 默认是 `TRUE`：电脑端串口工具的 **DTR / RTS** 会经无线下发到从机，直接驱动 **PA3（DTR）/ PA2（RTS）**。而这两个脚同时也是 ST 一键下载的 **BOOT0 / RESET**，所以只要在上位机里切 DTR/RTS，就等于去拉目标板的 BOOT0 / RESET（例如远程复位目标、或先进 Bootloader 再让上位机下载）。
+
+| 电脑端 | 从机输出 | 常接的目标脚 |
+|---|---|---|
+| 断言 **DTR** | **PA3 输出低** | 目标 **BOOT0** |
+| 断言 **RTS** | **PA2 输出低** | 目标 **RESET**（低有效） |
+| 未断言 / 未配对 / 没开串口 | 两脚都输出**高** | 目标正常运行 |
+
+要点：
+
+- **极性**：断言 = 低（标准 TTL 低有效）；从机刚连上时收到的是"两者都未断言"，不会一配对就把目标按住；
+- **时效**：DTR/RTS 变化要等从机下一次轮询（约 **10 ms**）才下发，且**只保留最终值** —— 微秒级的连续翻转会丢中间态，esptool 那类几十~几百毫秒的节奏够用；
+- **一键下载照旧可用**：下行单字节 `0x7F` 会触发下载时序临时接管这两个脚（做完保持"目标停在 Bootloader"的电平，下次改 DTR/RTS 或重连时会同步回来）；
+- 厂商模式（默认）与 CDC 模式都已支持；PC 改线码（波特率等）时也会顺带把当前 DTR/RTS 一起下发；
+- 想关掉直控、让这两个脚只做一键下载：把从机 `APP/include/uart.h` 的 `DTR_RTS_FUNC` 改成 `FALSE` 重编译（改完 0x7F 时序仍在）。
+
 ---
 
 ## 八、常见问题
@@ -363,6 +382,7 @@ screen /dev/ttyUSB0 115200
 | 配对成功前 PC 上看不到串口 | **有意设计**：主机未与从机连接时不枚举 USB，配对成功才出现虚拟串口，断开立即收回 |
 | 一直连不上 | 两个固件的无线参数是否一致（频点/PHY/接入地址常量）、是否同批固件；确认从机与主机都刷新过 |
 | 波特率不对 / 乱码 | 电脑端串口工具的设置会下发到从机，检查是否被上层工具改过；目标设备的实际线码要与之一致 |
+| 一配对目标就被按住 / 一直复位 | 电脑端工具**打开串口时通常会自动拉 DTR/RTS**（断言 = 从机 PA2/PA3 输出低）。把目标 RESET/BOOT0 接在这两个脚上时，请在上位机里显式把 DTR/RTS 置为"未断言"，否则见「七、5」 |
 | 编译报找不到编译器 | 先确认子模块已拉取：`git submodule update --init --recursive`，`tools/toolchain/bin/riscv-wch-elf-gcc` 应存在；也可用 `-DTOOLCHAIN_FOLDER` 指向别的含 `bin/riscv-wch-elf-gcc` 的目录（别用发行版 / xPack 工具链） |
 | `-march` 报错 / `unrecognized opcode 'mcpy'` | 用错工具链了：必须用沁恒定制的 `riscv-wch-elf-` GCC（即 `tools/toolchain`）。xPack 的 `riscv-none-elf-gcc` 虽然接受 `-march=..._xw0p1` 这种写法，但**并不实现** `mcpy` 等 xw 指令 |
 | 内存不够 / 链接报错 | Flash 可用区仅 236 KB（末尾 4 KB 存绑定信息）、RAM 12 KB，按 `build/*.map` 精简代码 |

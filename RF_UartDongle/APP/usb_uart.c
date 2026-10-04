@@ -125,11 +125,11 @@ const uint8_t TAB_USB_PRD_STR_DES[ ] = {
 
 const uint8_t USB_DEV_PARA_CDC_SERIAL_STR[]=     "WCH121212TS1";
 const uint8_t USB_DEV_PARA_CDC_PRODUCT_STR[]=    "USB2.0 To Serial Port";
-const uint8_t USB_DEV_PARA_CDC_MANUFACTURE_STR[]= "wch.cn";
+const uint8_t USB_DEV_PARA_CDC_MANUFACTURE_STR[]= "SeaHi";
 
 const uint8_t USB_DEV_PARA_VEN_SERIAL_STR[]=     "WCH454545TS2";
 const uint8_t USB_DEV_PARA_VEN_PRODUCT_STR[]=   "USB2.0 To Serial Port";
-const uint8_t USB_DEV_PARA_VEN_MANUFACTURE_STR[]= "wch.cn";
+const uint8_t USB_DEV_PARA_VEN_MANUFACTURE_STR[]= "SeaHi";
 
 
 typedef struct DevInfo
@@ -1348,6 +1348,13 @@ void USB_IRQProcessHandler( void )   /* USB中断服务程序 */
                     PRINT("ctl %02x %02x\r\n",Ep0Buffer[2],Ep0Buffer[3]);
                     carrier_sta = Ep0Buffer[2] & (1<<1);   //RTS状态
                     present_sta = Ep0Buffer[2] & (1<<0);   //DTR状态
+                    /* 【DTR/RTS 无线透传】CDC 模式下也把 DTR/RTS 存进 ioStaus 下发，
+                     * 极性与厂商模式统一：ioStaus 的 bit5=DTR、bit6=RTS，位为 1 = 未断言。
+                     * CDC 的 SET_CONTROL_LINE_STATE 是"1 = 断言"，所以要取反；
+                     * 从机那段输出代码按此约定写（见 RF_Uart/APP/rf_uart_tx.c）。 */
+                    Uart0Para.ioStaus = ( present_sta ? 0x00 : 0x20 )
+                                      | ( carrier_sta ? 0x00 : 0x40 );
+                    UART_Status = 1;
                     len = 0;
                     break;
                   }
@@ -1821,6 +1828,12 @@ void InitUSBDevPara(void)
   Uart0Para.DataBits = HAL_UART_8_BITS_PER_CHAR;
   Uart0Para.ParityType = HAL_UART_NO_PARITY;
   Uart0Para.StopBits = HAL_UART_ONE_STOP_BIT;
+  /* 【DTR/RTS 无线透传】modem 输出位的初值：bit5=1、bit6=1 -> 从机 PA2/PA3 输出高，
+   * （从机只读 bit5/bit6，其余位忽略；厂商模式真正下发的是 CH341 的 ~mcr）
+   * 即 DTR/RTS 都"未断言"。**不能留 0**：那会让从机一连上就把 PA2/PA3 拉低，
+   * 接着目标 RESET/BOOT0 时等于"连上即按住"。
+   * 之后 PC 每次改 DTR/RTS，CH341 的 0xA4 请求会覆盖这里并置 UART_Status=1 下发。 */
+  Uart0Para.ioStaus = 0x60;
   UART_Status = 1;
   VENSer0ParaChange = 0;
   VENSer0SendFlag = 0;

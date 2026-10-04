@@ -124,11 +124,11 @@ struct simple_buf {
 | `UART_FIFO_SIZE` | 硬件 FIFO | 见 `CH57x_uart.h` |
 | `TXD_PIN` | `(1<<0)` | PA0 |
 | `RXD_PIN` | `(1<<1)` | PA1 |
-| `RESET_PIN` / `DTR_PIN` | `(1<<2)` | PA2（`DTR_RTS_FUNC` 决定语义） |
-| `BOOT_PIN` / `RTS_PIN` | `(1<<3)` | PA3（同上） |
+| `DTR_PIN` / `BOOT_PIN` | `(1<<3)` | PA3 —— 同一对物理引脚的两个用途，两组宏名恒定义；`DTR_RTS_FUNC`（默认 `TRUE`）决定 PC 的 DTR 是否下发到它 |
+| `RTS_PIN` / `RESET_PIN` | `(1<<2)` | PA2（同上，PC 的 RTS / 一键下载的 RESET） |
 | `LED_PIN` | `(1<<7)` | PA7 |
 | `LED_BLINK_MS` | `100` | LED 翻转间隔（ms），闪烁周期 = 2×该值 = **200ms**；基于 SysTick 真实时间标定（主机在 `usb_uart.h`，同名） |
-| `LED_DATA_BLINK` | `0` | 1 = 收发数据时额外闪一下 LED；0 = 不闪（连接成功后保持熄灭） |
+| `LED_DATA_BLINK` | `1` | 1 = 收发数据时额外闪一下 LED（亮 `LED_DATA_PULSE_MS`）；0 = 不闪（连接成功后保持熄灭） |
 | `DATA_LEN_UART` | `32` | 一次搬运的阈值；缓冲里攒够这么多就立即置 `RCV_END` 不等超时 |
 | `BOUND_GET_PERI` | `10` | 发送绑定请求的周期（`uart.c` 内部） |
 

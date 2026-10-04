@@ -24,24 +24,40 @@
 
 
 /**
- * @brief   DTR/RTS功能与ST一键下载功能
- * @note    默认开启ST一键下载功能且关闭DTR/RTS功能；
- *          如需开启DTR/RTS功能，将DTR_RTS_FUNC置1即可；
- *          DTR / RESET_PIN     PA2
- *          RTS / BOOT_PIN      PA3
+ * @brief   PA2/PA3 复用：DTR/RTS 直控 与 ST 一键下载的 RESET/BOOT
+ * @note    PA2/PA3 是**同一对物理引脚的两个用途**，所以两组宏名在任何配置下都定义：
+ *              PA2 = RESET_PIN = RTS_PIN
+ *              PA3 = BOOT_PIN  = DTR_PIN
+ *
+ *          DTR_RTS_FUNC = TRUE（默认）
+ *              PC 端串口工具的 DTR/RTS 经无线下发，直接驱动这两个脚：
+ *              **DTR -> PA3**、**RTS -> PA2**（ioStaus 对应位为 1 = 未断言 = 输出高）。
+ *              ST 一键下载（下行单字节 0x7F）依然可用 —— 那一刻由下载时序临时接管。
+ *          DTR_RTS_FUNC = FALSE
+ *              两个脚只做 ST 一键下载的 RESET/BOOT，PC 的 DTR/RTS 不影响它们。
+ *
+ *          【注意】多数串口工具**一打开端口就会拉 DTR/RTS**（断言 = 输出低）。
+ *             若这两脚接着目标板的 RESET/BOOT0，开端口就可能把目标按住 ——
+ *             上位机要自行设置 DTR、RTS 的初始电平。
  */
 
- 
 #ifndef DTR_RTS_FUNC
-// #define DTR_RTS_FUNC     TRUE
-#define DTR_RTS_FUNC     FALSE
-#endif 
-#if((defined(DTR_RTS_FUNC)) && (DTR_RTS_FUNC == TRUE))
-#define    DTR_PIN        (1<<2)
-#define    RTS_PIN        (1<<3)
-#else
-#define    RESET_PIN      (1<<2)
-#define    BOOT_PIN       (1<<3)
+#define DTR_RTS_FUNC     TRUE
+// #define DTR_RTS_FUNC  FALSE
+#endif
+
+#define    DTR_PIN        (1<<3)    /* PA3：PC 的 DTR（也是 ST 下载的 BOOT0） */
+#define    RTS_PIN        (1<<2)    /* PA2：PC 的 RTS（也是 ST 下载的 RESET） */
+#define    RESET_PIN      (1<<2)    /* PA2 */
+#define    BOOT_PIN       (1<<3)    /* PA3 */
+
+/**
+ * @brief   ST 一键下载（下行恰好一个字节 0x7F 时跑 RESET/BOOT 时序）
+ * @note    与上面的 DTR/RTS 直控**复用同一对引脚、互不冲突**：平时引脚跟随 PC 的
+ *          DTR/RTS，收到 0x7F 时由下载时序临时接管。不需要就置 FALSE（省一点 Flash）。
+ */
+#ifndef ST_ISP_FUNC
+#define ST_ISP_FUNC      TRUE
 #endif
 
 

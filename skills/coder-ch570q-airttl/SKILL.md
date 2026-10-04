@@ -55,8 +55,8 @@ description: SeaHi-Serial-AirTTL 项目开发指南——基于沁恒 CH570Q 的
 |---|---|---|
 | `PA0` | UART TXD | 接目标板 RX |
 | `PA1` | UART RXD | 接目标板 TX |
-| `PA2` | `RESET_PIN`（默认） | 一键下载用，接目标板 RESET；`DTR_RTS_FUNC=TRUE` 时改为 `DTR_PIN` |
-| `PA3` | `BOOT_PIN`（默认） | 接目标板 BOOT0；`DTR_RTS_FUNC=TRUE` 时改为 `RTS_PIN` |
+| `PA2` | `RTS_PIN` / `RESET_PIN` | **同一对物理引脚的两个用途**（两组宏名恒定义）：PC 的 **RTS** 或 ST 一键下载的 **RESET**；`DTR_RTS_FUNC` 默认 `TRUE`（= 跟随 PC 的 DTR/RTS） |
+| `PA3` | `DTR_PIN` / `BOOT_PIN` | 同上：PC 的 **DTR** 或一键下载的 **BOOT0** |
 | `PA7` | LED（`LED_FUNC`） | **未与主机连接：快闪；连接成功：熄灭**（周期 = `LED_BLINK_MS`×2，默认 200ms；见第六节 §5） |
 | 两线调试口 | WCH-Link | 据手册 §1.2：**PA0/PA1 上电后默认被仿真调试口占用**，所以固件运行时会**主动关闭**它（`R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN`）才能把 PA0/PA1 当串口用；代价是下载失败时要**断电重上电** |
 
@@ -209,11 +209,17 @@ PC 改串口参数
 - **自适应主频**：波特率在 `400000 < bps < 1000000` 之间 → 切 `CLK_SOURCE_HSE_PLL_100MHz`，否则 `24MHz`；切换后 `mDelaymS(10)` 再设波特率
 - `UART_SetBuad()` 按 `gSysClock` 重算分频写 `R16_UART_DL`
 - 停止位/校验位/数据位分别写 `R8_UART_LCR` 的 `RB_LCR_STOP_BIT` / `RB_LCR_PAR_MOD`+`RB_LCR_PAR_EN` / `RB_LCR_WORD_SZ`
-- `DTR_RTS_FUNC=TRUE` 时还会按 `ioStaus` 的 bit5/bit6 控制 DTR/RTS 电平
+- 还会按 `ioStaus` 的 bit5/bit6 控制 PA2/PA3 电平（`rfApplyDtrRts()`，`DTR_RTS_FUNC=TRUE` 时；默认开）：
+  **ioStaus 位为 1 = 未断言 = 输出高**。厂商模式的 CH341 `0xA4` 传的是 `~mcr`（`bit5=DTR`/`bit6=RTS`，断言=1），
+  所以 **PC 断言 DTR → PA3 输出低、断言 RTS → PA2 输出低**（`DTR_PIN=(1<<3)`、`RTS_PIN=(1<<2)`，
+  与 `BOOT_PIN`/`RESET_PIN` 复用同一对脚）；CDC 模式在 `SET_CONTROL_LINE_STATE` 里取反后写同一个 `ioStaus`。
+  主机 `InitUSBDevPara()` 把它初值设为 **`0x60`**（都未断言），避免一连上就把目标按住。
+  该函数刻意 `noinline` 且**不加** `__HIGH_CODE`：否则内联进 RAM 里的 `rfProcessRx()` 会白占 ~56 B RAM
 
 ### 2. ST 一键下载（`0x7F` 握手）
 
-从机在收到下行数据且**恰好是单字节 `0x7F`** 时（且 `DTR_RTS_FUNC == FALSE`），执行 BOOT/RESET 时序：
+从机在收到下行数据且**恰好是单字节 `0x7F`** 时执行 BOOT/RESET 时序 —— **不再受 `DTR_RTS_FUNC` 限制**，
+与 DTR/RTS 直控**共存**（平时引脚跟随 PC 的 DTR/RTS，收到 `0x7F` 时由时序临时接管）：
 
 ```c
 GPIOA_SetBits(BOOT_PIN);   mDelaymS(1);
@@ -239,7 +245,7 @@ GPIOA_ResetBits(BOOT_PIN);  mDelaymS(50);
 | **厂商模式（默认）** | `USB_VENDOR_MODE` | `0x1A86` / `0x7523` | CH341 兼容，Linux 内核自带 `ch341` 驱动，**免驱**；`bInterfaceClass=0xFF` |
 | CDC-ACM | `USB_CDC_MODE` | `0x1A86` / `0x8040` | 标准 CDC，需系统驱动 |
 
-两种模式的**产品名都是** `USB2.0 To Serial Port`，厂商 `wch.cn`；厂商模式的接口类是 `0xFF / 子类 0x01 / 协议 0x02`。
+两种模式的**产品名都是** `USB2.0 To Serial Port`、**厂商名都是** `SeaHi`（本项目已从原厂的 `wch.cn` 改掉，见 `usb_uart.c` 的 `USB_DEV_PARA_*_MANUFACTURE_STR`）；厂商模式的接口类是 `0xFF / 子类 0x01 / 协议 0x02`。
 
 **端点（两种模式不同，由各自描述符决定，别混）**：
 
@@ -405,7 +411,7 @@ git tag -a v0.1.1 -m "..." && git push origin v0.1.1
 
 ### 调试
 
-- 从机：`DTR_RTS_FUNC` 决定 PA2/PA3 是"一键下载"还是"DTR/RTS"；`LED_FUNC` 控制 PA7 指示
+- 从机：`DTR_RTS_FUNC`（默认 `TRUE`）决定 PA2/PA3 是否跟随 PC 的 DTR/RTS；置 `FALSE` 则只做一键下载的 RESET/BOOT；`LED_FUNC` 控制 PA7 指示
 - 主机：本工程已带 `-DDEBUG`，PA3/PA2 是调试串口，`PRINT()` 输出启动信息与 RF 库版本
 - `PRINT()` 走 `my_printf.c`，**注意它会在时序敏感路径上耗时**，排查性能问题时可临时关掉 `DEBUG`
 

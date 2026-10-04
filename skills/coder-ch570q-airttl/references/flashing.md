@@ -67,7 +67,12 @@ R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN;
 
 ### 2. 从机的 PA2/PA3 是"一键下载"输出脚
 
-`DTR_RTS_FUNC == FALSE`（默认）时，PA2 = `RESET_PIN`、PA3 = `BOOT_PIN`，固件会在这两个脚上产生电平跳变。若你同时用它们接目标板的 RESET/BOOT，**烧写从机前先断开这两根线**，避免复位时序打架。
+PA2 = `RESET_PIN` / `RTS_PIN`、PA3 = `BOOT_PIN` / `DTR_PIN` 是同一对物理引脚，固件会在这两个脚上产生电平跳变：
+
+- 收到下行单字节 `0x7F` 时会跑 ST 一键下载时序（**默认也生效**，与 DTR/RTS 直控共存）；
+- `DTR_RTS_FUNC=TRUE`（默认）时，PC 的 DTR/RTS 变化也会改变这两脚电平（断言 = 低）。
+
+所以若你同时用它们接目标板的 RESET/BOOT，**烧写从机前先断开这两根线**，避免复位时序打架。
 
 ---
 
