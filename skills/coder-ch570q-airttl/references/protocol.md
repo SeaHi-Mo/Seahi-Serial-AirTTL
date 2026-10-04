@@ -156,7 +156,7 @@ pRsp->phy        = CONN_PHY_TYPE;           /* 1 = 2M */
             |      severData=Flash 里的值) --------->|
             |                                        |  判定：
             |                                        |   severData!=0 且匹配 → 放行
-            |                                        |   severData==0（首次）→ 要求 RSSI>-35dBm
+            |                                        |   severData==0（首次）→ 要求 RSSI>-58dBm
             |                                        |   否则打印 "reject.." 丢弃
             |<-- 0x81 BOUND_RSP(accessaddr,          |
             |      channel=srv&0x3F, phy=2M,         |
@@ -182,7 +182,7 @@ pRsp->phy        = CONN_PHY_TYPE;           /* 1 = 2M */
 | `!= 0` 且 不相等 | 拒绝（不是配对的从机） |
 | `== 0` | 首次连接，`rssi > -35` 才放行 |
 
-> 从机的配对要求"贴近"（RSSI > -35 dBm）只在**首次**生效；之后靠随机 `serverData` 匹配，与距离无关。
+> 从机的配对要求"贴近"（RSSI > -58 dBm）只在**首次**生效；之后靠随机 `serverData` 匹配，与距离无关。
 
 ---
 

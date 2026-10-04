@@ -144,7 +144,7 @@ typedef struct {
 1. 从机未绑定时每 20 ms 广播 `PKT_CMD_BOUND_REQ`，带 `interval` 与自己 Flash 里的 `serverData`
 2. 主机 `rfProcessRx()` 判定是否接受：
    - `severData != 0`（回连）：与本机 `gServerData` 匹配即可连，**或主机刚上电（`gServerData==0`）也放行**
-   - `severData == 0`（首次）：要求 **RSSI > -35 dBm**（贴在一起），否则打印 `reject..`
+   - `severData == 0`（首次）：要求 **RSSI > -58 dBm**（贴在一起），否则打印 `reject..`
 3. 接受则主机生成随机信息并回 `PKT_CMD_BOUND_RSP`：
    - `serverData = rf_rand16(rssi)`、`accessaddr = rf_rand_aa(serverData)`、`channel = serverData & 0x3F`
    - `phy = CONN_PHY_TYPE(1=2M)`、`interval = 10`、`timeout = 100`
