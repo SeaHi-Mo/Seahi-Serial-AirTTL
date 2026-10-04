@@ -62,7 +62,7 @@
 ```c
 /* 上电初始化顺序：释放调试引脚 → 配置 HSE 负载电容 → 切换主频 */
 R16_PIN_ALTERNATE &= ~RB_PIN_DEBUG_EN;   /* 关掉两线调试（占用 PA7/PA8 等复用脚），见 5.3 */
-HSECFG_Capacitance(HSECap_18p);          /* 32MHz 晶振内部负载电容 18pF，按实际晶振调整 */
+HSECFG_Capacitance(HSECap_6p);           /* 32MHz 晶振片内负载电容：本项目取最小档，外部另配 4.7pF×2 */
 SetSysClock(CLK_SOURCE_HSE_PLL_24MHz);   /* 低速档：PLL 24MHz（低功耗 / 保守时序） */
 /* 或高速档：SetSysClock(CLK_SOURCE_HSE_PLL_100MHz); */
 
@@ -78,7 +78,17 @@ FREQ_SYS = GetSysClock();   /* 若工程用变量而非宏保存主频，运行�
 
 **使用注意（★）**
 
-- **电容必须匹配实物晶振的 CL 值**。选大/选小会造成频偏、起振慢甚至不起振；`HSECap_18p` 是本项目常用的取值，换料时必须复核。
+- **电容必须匹配实物晶振的 CL 值**。选大/选小会造成频偏、起振慢甚至不起振。
+- **★ 本项目已标定**：外部电容 **4.7 pF × 2**，片内取 **`HSECap_6p`（最小档）** → 实测 **31.999954 MHz（−1.4 ppm）**。
+  参考点：外部 8.2 pF + 片内 18p 档时为 31.999364 MHz（−19.9 ppm）。由 ΔCL(−1.75 pF) → Δf(+18.4 ppm) 可标出
+  **牵引率 ≈ 10.5 ppm/pF**，即**片内每档（2 pF）≈ 21 ppm** —— 粒度比需要的精度粗，所以**基准靠外部电容定、片内档位只做取舍**。
+- **两个固件必须同值**：`RF_Uart/APP/main.c` 与 `RF_UartDongle/APP/main.c` 各有一处调用，同一块板 + 同一个外部电容下，
+  两端档位不同会让两侧频差吃掉链路余量。
+- **换料后重标**：片内先打 `HSECap_6p` 测频率 —— **偏高**则逐档往上加（每档约 21 ppm）；**仍偏低**则减小外部电容。
+  调法上**"宁小勿大"**：片内已是最小档时还偏低就无牌可打，偏高反倒总能收回来。
+- ⚠️ **别走这两条弯路**：`R32_OSC_CALIB` / `R8_OSC_CAL_CTRL` / `R16_OSC_CAL_CNT` 是"**用系统时钟去计数 LSI 周期**"的
+  校准计数器，**改不了 XT32M**；RF 频点字段（`rfipTx_t.frequency`）按本项目换算是 `f = 2400 + ch`（MHz），
+  **粒度 1 MHz ≈ 417 ppm**，做不了 ppm 级补偿。
 - 必须在 `SetSysClock()` **之前**调用。
 - `HSECFG_Current()` 一般保持默认即可；仅在晶振起振困难（负载重、ESR 高）时加大。
 
@@ -137,7 +147,7 @@ FREQ_SYS = GetSysClock();   /* 若工程用变量而非宏保存主频，运行�
 | 枚举 | 成员（按声明顺序） | 说明 |
 | --- | --- | --- |
 | `HSECurrentTypeDef` | `HSE_RCur_75`(0)、`HSE_RCur_100`、`HSE_RCur_125`、`HSE_RCur_150` | 偏置电流 75% / 100% / 125% / 150% |
-| `HSECapTypeDef` | `HSECap_6p`(0)、`HSECap_8p`、`HSECap_10p`、`HSECap_12p`、`HSECap_14p`、`HSECap_16p`、**`HSECap_18p`**、`HSECap_20p` | 内部负载电容 6/8/10/12/14/16/18/20 pF |
+| `HSECapTypeDef` | **`HSECap_6p`(0)**、`HSECap_8p`、`HSECap_10p`、`HSECap_12p`、`HSECap_14p`、`HSECap_16p`、`HSECap_18p`、`HSECap_20p` | 内部负载电容 6/8/10/12/14/16/18/20 pF（★ 本项目取 `HSECap_6p`；注意枚举名与 SFR 注释的 `n*2+10pF` 对不上，以**档位越大电容越大**为准） |
 | `RTC_OSCCntTypeDef` | `Count_1`(0)、`Count_2`、`Count_4`、`Count_32`、`Count_64`、`Count_128`、`Count_1024`、`Count_2047` | RTC 初始化捕获周期数 |
 | `RTC_TMRCycTypeDef` | `Period_4096`(0)、`Period_8192`、`Period_16384`、`Period_32768`、`Period_65536`、`Period_131072`、`Period_262144`、`Period_524288` | RTC 周期定时档位（基准 32768Hz） |
 | `RTC_EVENTTypeDef` | `RTC_TRIG_EVENT`(0)、`RTC_TMR_EVENT` | RTC 中断事件类型 |
@@ -1113,7 +1123,7 @@ GetMACAddress(mac);
 | | `CLK_SOURCE_HSE_PLL_24MHz` | `0x40｜25` | 低速档 |
 | | `CLK_SOURCE_HSE_PLL_100MHz` | `0x40｜6` | 高速档 |
 | | `HSECFG_Capacitance` | `void HSECFG_Capacitance(HSECapTypeDef c)` | 晶振负载电容 |
-| | `HSECap_18p` | 6 | 18pF |
+| | `HSECap_6p` | 0 | 6pF（★ 本项目取值，另配外部 4.7pF×2，实测 −1.4ppm） |
 | | `FREQ_SYS` | 默认 `100000000` | 编译期主频常数（`CH57x_common.h`） |
 | **GPIO** | `GPIOA_ModeCfg` | `void GPIOA_ModeCfg(uint32_t pin, GPIOModeTypeDef mode)` | — |
 | | `GPIOA_SetBits` / `GPIOA_ResetBits` / `GPIOA_InverseBits` | 宏，写 `R32_PA_SET`/`CLR`/`OUT` | 置高/置低/翻转 |

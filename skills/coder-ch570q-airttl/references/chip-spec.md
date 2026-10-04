@@ -197,7 +197,10 @@ CH570E / CH570Q / CH570D 的引脚排布不同（手册表 1-2 三列）。**改
 ## 八、时钟
 
 - 内置 PLL、内置低频 RC 振荡器
-- 外部 **32 MHz 晶体**接在 `XO` / `XI`（本项目 `HSECFG_Capacitance(HSECap_18p)` 配 18 pF 负载电容）
+- 外部 **32 MHz 晶体**接在 `XO` / `XI`；负载电容 = 外部 **4.7 pF × 2** + 片内档位 **`HSECFG_Capacitance(HSECap_6p)`**（最小档）
+  - 本项目实测 **31.999954 MHz（−1.4 ppm）**；牵引率 ≈ 10.5 ppm/pF（片内每档 2 pF ≈ 21 ppm）
+  - **两个固件必须同值**（`RF_Uart` / `RF_UartDongle` 各一份），否则两侧频差会吃掉链路余量
+  - 标定与重标方法见 [wch-stdperiph-api.md](./wch-stdperiph-api.md) §1.2 与 README「三、晶振与负载电容」
 - 主频可切：从机默认 24 MHz，检测到波特率 400 kbps~1 Mbps 时切 **100 MHz**；主机固定 100 MHz
 
 ---
