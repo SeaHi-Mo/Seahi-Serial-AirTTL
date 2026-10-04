@@ -11,8 +11,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '要发布的版本 tag（如 v0.1.1）'
+        description: '要发布的版本 tag（如 v0.3.0；必须是已推送的 tag）'
         required: true
+      latest:
+        description: '把该 Release 标为 Latest（重发旧版本时请取消勾选）'
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -178,15 +182,31 @@ jobs:
           [ -n "${TITLE}" ] || TITLE="${TAG}"
           echo "Release 标题: ${TITLE}"
 
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG 已存在：更新产物与说明"
-            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json name,tagName,url | cat
+          # ---- 是否标 Latest：tag 推送（= 新版本）总是标；手动触发由输入决定 ----
+          LATEST=""
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.latest }}" = "true" ]; then
+            LATEST="--latest"
+          fi
+          echo "标记 Latest: ${LATEST:-否}"
 
-            # immutable（不可变发布）之后不能再补资产 —— 提前识别，给出可执行的处置办法，
+          # ---- 查该 tag 上是否已有 Release ----
+          # 走 REST API 而不是 `gh release view`：gh 对「草稿」可能看不见，
+          # 会误判成"不存在"然后去 create，撞上 already exists 而失败（v0.3.0 就是这么挂的）。
+          API="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}"
+          CODE="$(curl -s -o /tmp/rel.json -w '%{http_code}' \
+                   -H "Authorization: Bearer ${GH_TOKEN}" \
+                   -H "Accept: application/vnd.github+json" "${API}")"
+          echo "查询已有 Release: HTTP ${CODE}"
+
+          if [ "${CODE}" = "200" ]; then
+            IS_DRAFT="$(python3 -c "import json;print(str(json.load(open('/tmp/rel.json')).get('draft',False)).lower())")"
+            IS_IMMUTABLE="$(python3 -c "import json;print(str(json.load(open('/tmp/rel.json')).get('immutable',False)).lower())")"
+            ASSET_N="$(python3 -c "import json;print(len(json.load(open('/tmp/rel.json')).get('assets') or []))")"
+            echo "现有 Release：draft=${IS_DRAFT} immutable=${IS_IMMUTABLE} 已有资产=${ASSET_N} 个"
+
+            # immutable（不可变发布）之后无法再补资产 —— 明确报错 + 给出处置办法，
             # 而不是让 gh 抛一句看不懂的错。
-            IMMUTABLE="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
-                          --json isImmutable -q '.isImmutable' 2>/dev/null || echo '')"
-            if [ "${IMMUTABLE}" = "true" ]; then
+            if [ "${IS_IMMUTABLE}" = "true" ]; then
               echo "::error::Release ${TAG} 是 immutable（不可变发布），无法再上传固件。"
               echo "  处置二选一："
               echo "   ① 仓库 Settings → General → Releases 关掉「Immutable releases」后重跑本工作流；"
@@ -194,22 +214,44 @@ jobs:
               exit 1
             fi
 
+            echo "Release ${TAG} 已存在：更新产物与说明"
             if ! gh release upload "$TAG" "${PATHS[@]}" --repo "$GITHUB_REPOSITORY" --clobber; then
-              echo "::error::gh release upload 失败（退出码 $?）"
-              echo "  常见原因：① Release 为 immutable；② Token 缺 contents:write；③ 资产名冲突/被锁定"
+              echo "::error::gh release upload 失败"
               echo "  排查：gh release view ${TAG} --repo ${GITHUB_REPOSITORY}"
               exit 1
             fi
-            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "${TITLE}" --notes-file RELEASE_NOTES.md
-          else
+
+            EDIT_ARGS=(--repo "$GITHUB_REPOSITORY" --title "${TITLE}" --notes-file RELEASE_NOTES.md)
+            if [ "${IS_DRAFT}" = "true" ]; then
+              echo "该 Release 还是草稿（未发布）→ 本次一并发布"
+              EDIT_ARGS+=(--draft=false)
+            fi
+            if [ -n "${LATEST}" ]; then
+              EDIT_ARGS+=("${LATEST}")
+            fi
+            gh release edit "$TAG" "${EDIT_ARGS[@]}"
+          elif [ "${CODE}" = "404" ]; then
             echo "创建 Release $TAG"
-            if ! gh release create "$TAG" "${PATHS[@]}" --repo "$GITHUB_REPOSITORY" \
-                 --title "${TITLE}" --notes-file RELEASE_NOTES.md; then
-              echo "::error::gh release create 失败（退出码 $?）"
+            CREATE_ARGS=("$TAG")
+            CREATE_ARGS+=("${PATHS[@]}")
+            CREATE_ARGS+=(--repo "$GITHUB_REPOSITORY" --title "${TITLE}" --notes-file RELEASE_NOTES.md)
+            if [ -n "${LATEST}" ]; then
+              CREATE_ARGS+=("${LATEST}")
+            fi
+            if ! gh release create "${CREATE_ARGS[@]}"; then
+              echo "::error::gh release create 失败"
               echo "  排查：gh release view ${TAG} --repo ${GITHUB_REPOSITORY}"
               exit 1
             fi
+          else
+            echo "::error::查询 Release 失败（HTTP ${CODE}）"
+            head -c 300 /tmp/rel.json || true
+            exit 1
           fi
 
-          echo "== 发布完成，当前 Release 资产 =="
+          echo "== 发布完成 =="
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json name,isDraft,isPrerelease | cat
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' | cat
+          echo "当前 Latest: $(curl -s -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest" \
+            | python3 -c "import json,sys;print(json.load(sys.stdin).get('tag_name','?'))" 2>/dev/null || echo '?')"
