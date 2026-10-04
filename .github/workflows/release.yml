@@ -27,6 +27,8 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
           submodules: recursive
+          # 发布说明与 Release 标题都要读 tag 注解（annotated tag），显式把 tag 取全
+          fetch-tags: true
 
       - name: 解析版本号
         id: ver
@@ -36,6 +38,11 @@ jobs:
             TAG="${{ inputs.tag }}"
           else
             TAG="${GITHUB_REF_NAME}"
+          fi
+          # tag 不存在就直接失败 —— 免得 workflow_dispatch 手抖填错版本号后一路跑到发布才报错
+          if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "::error::仓库里没有 tag「${TAG}」，请确认输入与已推送的 tag 完全一致（例：v0.3.0）"
+            exit 1
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "版本号: ${TAG}"
@@ -146,11 +153,63 @@ jobs:
           TAG: ${{ steps.ver.outputs.tag }}
         run: |
           set -euo pipefail
+
+          # ---- 产物自检：缺任何一个就当场失败，并把 dist/ 实际内容打出来 ----
+          FILES=(
+            "RF_Uart_${TAG}.hex"
+            "RF_UartDongle_${TAG}.hex"
+            "RF_TEST_2474M_ch36_${TAG}.hex"
+            "RF_TEST_2476M_ch37_${TAG}.hex"
+            "RF_TEST_2478M_ch38_${TAG}.hex"
+          )
+          echo "== dist/ 内容 =="
+          ls -l dist/
+          PATHS=()
+          MISSING=0
+          for f in "${FILES[@]}"; do
+            [ -s "dist/$f" ] || { echo "::error::缺少产物 dist/$f"; MISSING=1; }
+            PATHS+=("dist/$f")
+          done
+          [ "${MISSING}" -eq 0 ] || { echo "产物不全，终止发布"; exit 1; }
+
+          # ---- 标题：优先用 tag 注解的首行，不要用干巴巴的「$TAG」----
+          # annotated tag 的 %(contents:subject) 就是注解首行；轻量 tag 取不到就退回 $TAG。
+          TITLE="$(git for-each-ref "refs/tags/${TAG}" --format='%(contents:subject)' 2>/dev/null || true)"
+          [ -n "${TITLE}" ] || TITLE="${TAG}"
+          echo "Release 标题: ${TITLE}"
+
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG 已存在，更新产物与说明"
-            gh release upload "$TAG" dist/*.hex --repo "$GITHUB_REPOSITORY" --clobber
-            gh release edit   "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file RELEASE_NOTES.md
+            echo "Release $TAG 已存在：更新产物与说明"
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json name,tagName,url | cat
+
+            # immutable（不可变发布）之后不能再补资产 —— 提前识别，给出可执行的处置办法，
+            # 而不是让 gh 抛一句看不懂的错。
+            IMMUTABLE="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+                          --json isImmutable -q '.isImmutable' 2>/dev/null || echo '')"
+            if [ "${IMMUTABLE}" = "true" ]; then
+              echo "::error::Release ${TAG} 是 immutable（不可变发布），无法再上传固件。"
+              echo "  处置二选一："
+              echo "   ① 仓库 Settings → General → Releases 关掉「Immutable releases」后重跑本工作流；"
+              echo "   ② 删掉该 Release（tag 保留），再重跑本工作流让它重新创建。"
+              exit 1
+            fi
+
+            if ! gh release upload "$TAG" "${PATHS[@]}" --repo "$GITHUB_REPOSITORY" --clobber; then
+              echo "::error::gh release upload 失败（退出码 $?）"
+              echo "  常见原因：① Release 为 immutable；② Token 缺 contents:write；③ 资产名冲突/被锁定"
+              echo "  排查：gh release view ${TAG} --repo ${GITHUB_REPOSITORY}"
+              exit 1
+            fi
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "${TITLE}" --notes-file RELEASE_NOTES.md
           else
             echo "创建 Release $TAG"
-            gh release create "$TAG" dist/*.hex --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file RELEASE_NOTES.md
+            if ! gh release create "$TAG" "${PATHS[@]}" --repo "$GITHUB_REPOSITORY" \
+                 --title "${TITLE}" --notes-file RELEASE_NOTES.md; then
+              echo "::error::gh release create 失败（退出码 $?）"
+              echo "  排查：gh release view ${TAG} --repo ${GITHUB_REPOSITORY}"
+              exit 1
+            fi
           fi
+
+          echo "== 发布完成，当前 Release 资产 =="
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' | cat
