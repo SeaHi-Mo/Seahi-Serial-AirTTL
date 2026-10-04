@@ -23,10 +23,20 @@ extern "C" {
 #include "CH572rf.h"
 
 /* 默认测试参数 */
-#define RFTEST_DEF_CHANNEL      19          /* f = 2402 + 2*19 = 2440 MHz（中间信道） */
+/* 默认频点：37 → 2476 MHz，即应用频段 {74,76,78} = 2474/2476/2478 MHz 的中间那个。
+ * 可用编译期宏覆盖，例如 -DRFTEST_DEF_CHANNEL=36（2474 MHz）/ 38（2478 MHz）。
+ * 应用信道 → 定频信道换算：2474→36、2476→37、2478→38（2402 + 2*ch MHz）。 */
+#ifndef RFTEST_DEF_CHANNEL
+#define RFTEST_DEF_CHANNEL      37
+#endif
 #define RFTEST_DEF_POWER_IDX    15          /* 索引 15 = +7 dBm（芯片最高档） */
 #define RFTEST_POWER_LEVELS     16
 #define RFTEST_CHANNEL_MAX      39
+
+/* 应用频段（CH_HOP_TBL = {74,76,78} → 2400+ch MHz）对应的定频信道 */
+#define RFTEST_APP_CH_LOW       36          /* 2474 MHz */
+#define RFTEST_APP_CH_MID       37          /* 2476 MHz */
+#define RFTEST_APP_CH_HIGH      38          /* 2478 MHz */
 
 /*********************************************************************
  * @fn      RFTestInit
@@ -36,6 +46,16 @@ extern "C" {
  * @return  none
  */
 void     RFTestInit( void );
+
+/*********************************************************************
+ * @fn      RFTestBlinkChannel
+ *
+ * @brief   上电用 LED 闪 N 次提示当前频点：应用频段 ch 36/37/38（2474/2476/2478 MHz）
+ *          分别闪 1/2/3 次；其它信道闪 1 次。不接串口时靠它认固件频点。
+ *
+ * @return  none
+ */
+void     RFTestBlinkChannel( void );
 
 /*********************************************************************
  * @fn      RFTestStart

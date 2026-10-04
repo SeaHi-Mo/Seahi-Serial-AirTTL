@@ -219,6 +219,22 @@ int main( void )
     rfTestPrintHelp( );
     rfTestPrintStatus( );
 
+    /* ★ 上电即进入定频发射：不敲任何命令，插上就开始发（PA7 LED 常亮）。
+     *   发射前先用 LED 闪 N 次提示当前频点（ch 36/37/38 → 闪 1/2/3 次），
+     *   这样不接串口也能确认烧进去的是哪个频点的固件。
+     *   下面的命令行仍然保留 —— 只在需要临时换信道/功率/停机时才用得上。 */
+    RFTestBlinkChannel( );
+
+    if( RFTestStart( ) == 0 )
+    {
+        UART_SendStr( "AUTO: fixed-frequency TX started\r\n" );
+    }
+    else
+    {
+        UART_SendStr( "AUTO: TX start FAILED (RF phy busy)\r\n" );
+    }
+    rfTestPrintStatus( );
+
     for( ;; )
     {
         if( UART_CmdGetLine( line, RFTEST_LINE_MAX ) )

@@ -79,6 +79,35 @@ void RFTestInit( void )
     RFRole_BasicInit( &conf );
 }
 
+/*********************************************************************
+ * @fn      RFTestBlinkChannel
+ *
+ * @brief   上电用 LED 闪 N 次提示当前频点（不接串口时靠它认烧的是哪个频点）：
+ *            应用频段 ch 36/37/38（2474/2476/2478 MHz）→ 闪 1 / 2 / 3 次
+ *            其它信道 → 闪 1 次
+ *          闪完再进常亮发射状态。
+ *
+ * @return  none
+ */
+void RFTestBlinkChannel( void )
+{
+    uint8_t n = 1;
+    uint8_t i;
+
+    if( ( s_ch >= RFTEST_APP_CH_LOW ) && ( s_ch <= RFTEST_APP_CH_HIGH ) )
+    {
+        n = (uint8_t)( s_ch - RFTEST_APP_CH_LOW + 1 );      /* 36->1, 37->2, 38->3 */
+    }
+
+    for( i = 0; i < n; i++ )
+    {
+        GPIOA_SetBits( RFTEST_LED_PIN );
+        mDelaymS( 150 );
+        GPIOA_ResetBits( RFTEST_LED_PIN );
+        mDelaymS( 350 );
+    }
+}
+
 uint8_t RFTestStart( void )
 {
     bStatus_t s;
