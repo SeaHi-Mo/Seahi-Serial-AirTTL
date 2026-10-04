@@ -240,6 +240,7 @@ tools/toolchain/bin/riscv-wch-elf-gdb RF_Uart/build/RF_Uart.elf \
 |---|---|---|---|
 | `RF_Uart/build/RF_Uart.hex` | **从机**（接被调试设备） | 从机板（UART 侧） | 板子上没有 `/dev/ttyUSB*`，主机 USB 不枚举 |
 | `RF_UartDongle/build/RF_UartDongle.hex` | **主机**（插电脑） | Dongle（USB 侧） | 从机不广播、电脑端没有虚拟串口 |
+| `RF_TEST/build/RF_TEST.hex` | **射频测试固件**（定频发射，测指标用） | 任意一块 CH570Q 板 | —（它本来就是覆盖掉正常固件来做测试的；**测完记得把从机/主机固件烧回去**） |
 
 两者都烧好后才可能配对成功。发版页 `/releases` 上的文件名就是 `RF_Uart_<版本>.hex` / `RF_UartDongle_<版本>.hex`。
 

@@ -89,6 +89,15 @@ RF_Cmake/
 │   ├── Ld/ · LIB/ · RVMSIS/ · Startup/ · StdPeriphDriver/   # 与从机同构
 │   └── RF_UartDongle.launch     # MounRiver Studio 调试配置
 │
+├── RF_TEST/                     # ★ 射频测试固件：定频（单信道）发射，配频谱仪/综测仪用
+│   ├── APP/
+│   │   ├── main.c               # 入口：时钟/串口/射频初始化 + 命令行解析
+│   │   ├── rf_test.c / include/rf_test.h    # 定频发射控制（SingleChannel / TestEnd / SetTxPower）
+│   │   └── uart_cmd.c / include/uart_cmd.h  # 调试串口命令行（PA0/PA1，115200）
+│   ├── CMakeLists.txt           # ★ CMake 构建脚本
+│   ├── README.md                # 测试固件用法（命令表、接线、注意事项）
+│   └── Ld/ · LIB/ · RVMSIS/ · Startup/ · StdPeriphDriver/   # 与从机同构
+│
 ├── tools/toolchain/             # ★ git 子模块：沁恒定制的 riscv-wch-elf GCC 12.2.0（Linux x64）
 │   └── bin/riscv-wch-elf-gcc    # 唯一支持 xw 扩展（mcpy 等指令）的编译器
 │
@@ -250,18 +259,28 @@ cmake -B build -G "Unix Makefiles"
 cmake --build build -j"$(nproc)"
 ```
 
+### 6. 编译射频测试固件（可选）
+
+`RF_TEST` 是独立的射频测试固件（定频发射），只在需要测射频指标时才编：
+
+```bash
+cd ../RF_TEST
+cmake -B build -G "Unix Makefiles"
+cmake --build build -j"$(nproc)"
+```
+
 > `TOOLCHAIN_FOLDER` 默认已指向仓库内的 `tools/toolchain`，无需手动指定。
 
-### 6. 编译产物
+### 7. 编译产物
 
 每个工程的 `build/` 目录下会生成：
 
 | 文件 | 说明 |
 |---|---|
-| `RF_Uart.elf` / `RF_UartDongle.elf` | 带调试信息的可执行文件，用于 GDB 下载与调试 |
-| `RF_Uart.hex` / `RF_UartDongle.hex` | Intel HEX，用于烧写 |
-| `RF_Uart.map` / `RF_UartDongle.map` | 内存映射，检查 Flash/RAM 占用 |
-| `RF_Uart.lst` / `RF_UartDongle.lst` | 反汇编列表 |
+| `RF_Uart.elf` / `RF_UartDongle.elf` / `RF_TEST.elf` | 带调试信息的可执行文件，用于 GDB 下载与调试 |
+| `RF_Uart.hex` / `RF_UartDongle.hex` / `RF_TEST.hex` | Intel HEX，用于烧写 |
+| `RF_Uart.map` / `RF_UartDongle.map` / `RF_TEST.map` | 内存映射，检查 Flash/RAM 占用 |
+| `RF_Uart.lst` / `RF_UartDongle.lst` / `RF_TEST.lst` | 反汇编列表 |
 
 构建日志末尾会打印内存占用（`--print-memory-usage`）。**注意 RAM 只有 12 KB、可用代码区只有 236 KB**（Flash 末尾 4 KB 被绑定信息占用），加功能时盯着点。
 
@@ -271,6 +290,7 @@ cmake --build build -j"$(nproc)"
 |---|---|---|
 | `RF_Uart`（从机） | 12.1 KB / 240 KB（4.9%） | 11.7 KB / 12 KB（**95.4%**） |
 | `RF_UartDongle`（主机） | 21.3 KB / 240 KB（8.7%） | 9.9 KB / 12 KB（80.7%） |
+| `RF_TEST`（射频测试） | 8.9 KB / 240 KB（3.6%） | 4.6 KB / 12 KB（37.7%） |
 
 从机的 RAM 余量**只剩约 0.5 KB**（3 KB 串口环形缓冲区 + 在 RAM 里执行的 `.highcode` 段占了大头）。
 加全局变量 / 加大缓冲、或往时序敏感路径加代码前，先看 `build/*.map`：实测 RAM 到 96% 出头就会"编得出但跑不稳"。
@@ -397,6 +417,32 @@ screen /dev/ttyUSB0 115200
 - **一键下载照旧可用**：下行单字节 `0x7F` 会触发下载时序临时接管这两个脚（做完保持"目标停在 Bootloader"的电平，下次改 DTR/RTS 或重连时会同步回来）；
 - 厂商模式（默认）与 CDC 模式都已支持；PC 改线码（波特率等）时也会顺带把当前 DTR/RTS 一起下发；
 - 想关掉直控、让这两个脚只做一键下载：把从机 `APP/include/uart.h` 的 `DTR_RTS_FUNC` 改成 `FALSE` 重编译（改完 0x7F 时序仍在）。
+
+### 6. 射频测试固件（`RF_TEST`）
+
+`RF_TEST/` 是**独立的测试固件**（不参与正常通信流程），把板子置于**定频发射**状态，配合
+频谱仪 / 综测仪测载波频率（频偏）、发射功率、调制质量与谐波杂散。
+
+- **烧录**：和另外两个固件一样，把 `RF_TEST/build/RF_TEST.hex` 烧到任意一块 CH570Q 板子即可
+  （它会覆盖板上的从机/主机固件，**测完记得把正式固件烧回去**）；
+- **接线**：`PA0` = TXD、`PA1` = RXD 接 USB-TTL 到电脑，**115200-8-N-1**；`PA7` LED 常亮 = 正在发射；
+- **上电后不会自动发射**，必须敲命令（以 CR/LF 结束）：
+
+| 命令 | 说明 |
+|---|---|
+| `?` / `h` | 打印帮助 |
+| `s` | 查看状态（TX 开关 / 信道 / 频率 / 功率） |
+| `t` | 开始定频发射（单信道测试模式） |
+| `e` | 停止测试模式 |
+| `c <0-39>` | 设信道：**f = 2402 + 2×ch MHz**（如 `c 19` → 2440 MHz） |
+| `p <-25..7>` | 按 dBm 设发射功率（就近取档） |
+
+> ⚠️ **定频接口的信道编号与正常通信用的是两套**：`RFIP_SingleChannel(ch)` 按 **BLE 信道号 0~39**
+> （2 MHz 步进，`f = 2402 + 2×ch`），而 `rf.h` 里的 `DEF_FREQUENCY` / `CH_HOP_TBL`（`{74,76,78}`）
+> 是 `f = 2400 + ch` 的另一套编号。**别把 74/76/78 直接喂给 `c`** —— 2478 MHz 在定频接口里是 `c 38`。
+>
+> 固件同样按已标定的 `HSECap_6p` 配置 32 MHz 晶振负载电容（见「三、晶振与负载电容」），
+> 这样测出来的频偏才代表正式固件的工作状态。详细用法见 [`RF_TEST/README.md`](RF_TEST/README.md)。
 
 ---
 

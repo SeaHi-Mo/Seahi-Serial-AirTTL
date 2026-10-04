@@ -41,8 +41,9 @@ description: SeaHi-Serial-AirTTL 项目开发指南——基于沁恒 CH570Q 的
 |---|---|---|---|
 | `RF_Uart` | **从机**，放被调试设备旁 | UART（TTL） | `APP/main.c` → `RF_StatusQuery()` 死循环 |
 | `RF_UartDongle` | **主机**，插电脑 | USB（虚拟串口） | `APP/main.c` → `USB_StatusQuery()` 死循环 |
+| `RF_TEST` | **射频测试固件**（定频单载波发射，配频谱仪/综测仪，**不属于正常通信流程**） | 调试串口 PA0/PA1 | `APP/main.c` → 命令行；定频控制在 `APP/rf_test.c` |
 
-> **两个工程源码几乎对称**：`rf.c` / `rf.h` / `buf.c` / `my_printf.c` / `log.h` 是共用底座，差异只在业务层——从机 `rf_uart_tx.c` + `uart.c`，主机 `rf_uart_rx.c` + `usb_uart.c`。
+> **两个正式工程源码几乎对称**：`rf.c` / `rf.h` / `buf.c` / `my_printf.c` / `log.h` 是共用底座，差异只在业务层——从机 `rf_uart_tx.c` + `uart.c`，主机 `rf_uart_rx.c` + `usb_uart.c`。
 > **改无线协议时两个工程都要动，且 `rf.h` 里的常量必须保持一致。**
 
 ---

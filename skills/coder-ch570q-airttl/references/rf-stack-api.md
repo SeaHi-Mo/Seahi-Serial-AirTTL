@@ -287,9 +287,13 @@ void BB_IRQHandler( void )  { BB_LibIRQHandler( ); }
 | `void RFIP_Calibration( void );` | 无 | 无 | 射频校准 | 一般在射频初始化阶段或温度/电压大幅变化后调用；**耗时、不可在中断里调**。本项目未调用 |
 | `void RFIP_WakeUpRegInit( void );` | 无 | 无 | **睡眠唤醒后重新初始化 RFIP 寄存器** | 低功耗场景专用；如果做过 `RFRole_Shut()` + 低功耗，唤醒后应调用。本项目未调用 |
 | `uint8_t RFIP_ReadCrc( void );` | 无 | CRC 状态值 | 读 CRC 状态 | 头文件 `@return` 注释写的是 "the value of crc state"。本项目未调用；正常判 CRC 用回调里的 `RF_STATE_RX_CRCERR` |
-| `void RFIP_SetTxPower( uint8_t val );` | `val`：功率档位（`LL_TX_POWEER_*`） | 无 | 设置发射功率档位 | **本项目未调用**（仅在 `APP/rf.c` 顶部注释里被提到）。项目改功率走的是 `gTxParam.txPowerVal = LL_TX_POWEER_0_DBM;` 然后由 `RFIP_StartTx()` 生效 —— 两种方式不要叠加使用，二选一 |
-| `bStatus_t RFIP_SingleChannel( uint8_t ch );` | `ch`：信道号 `0..39`，`f = 2402 + ch*2` MHz | `0` = 成功，`1` = phy busy | 进入**单载波（单信道）测试模式** | 生产测试/定频用。使用前要停止正常收发；`phy busy` 说明射频还在忙，需先 `RFRole_Stop()`。本项目未调用 |
-| `void RFIP_TestEnd( void );` | 无 | 无 | **退出单载波测试模式** | 必须与 `RFIP_SingleChannel()` 成对使用，否则回不到正常收发。本项目未调用 |
+| `void RFIP_SetTxPower( uint8_t val );` | `val`：功率档位（`LL_TX_POWEER_*`） | 无 | 设置发射功率档位 | 正式固件（从机/主机）**不调用**，它们改功率走 `gTxParam.txPowerVal = LL_TX_POWEER_7_DBM;` 再由 `RFIP_StartTx()` 生效 —— 两种方式不要叠加使用，二选一。**`RF_TEST` 工程用这个**（定频模式没有 `txParam`） |
+| `bStatus_t RFIP_SingleChannel( uint8_t ch );` | `ch`：信道号 `0..39`，`f = 2402 + ch*2` MHz | `0` = 成功，`1` = phy busy | 进入**单载波（单信道）测试模式** | 生产测试/定频用。使用前要停止正常收发；`phy busy` 说明射频还在忙，需先 `RFRole_Stop()`。**由 `RF_TEST` 工程调用**（正式固件不用） |
+| `void RFIP_TestEnd( void );` | 无 | 无 | **退出单载波测试模式** | 必须与 `RFIP_SingleChannel()` 成对使用，否则回不到正常收发。**由 `RF_TEST` 工程调用** |
+
+> ⚠️ **两套信道编号别混**：`RFIP_SingleChannel()` 用 **BLE 信道号 0~39**（2 MHz 步进，`f = 2402 + 2×ch`）；
+> 而正式固件的 `rfipTx_t.frequency` / `rf.h` 里的 `DEF_FREQUENCY`、`CH_HOP_TBL`（`{74,76,78}`）是
+> `f = 2400 + ch` 的另一套编号。2478 MHz 在定频接口里是 `ch 38`，不是 78。
 
 > **头文件里不存在 `RFIP_SetTxDelayTime()`**：`APP/rf.c` 第 13 行注释提到它，但 `CH572rf.h` 中**没有这个原型**。切通道的稳定时间实际是通过 `rfipTx_t.waitTime` 表达的（`rf_tx_start(buf, 60)` → 120 = 60 µs）。**以头文件为准，不要照着注释去调这个函数。**
 
@@ -773,7 +777,7 @@ static void rf_disconnect( void )
 
 | 接口 | 归属 | 本项目状态 |
 |---|---|---|
-| `RFRole_Stop()` | 协议栈 | 全仓库无调用点 |
+| `RFRole_Stop()` | 协议栈 | **`RF_TEST`**（`RFTestStart()` 里 `phy busy` 重试前先停射频）；正式固件无调用点 |
 | `RFIP_Calibration()` | 协议栈 | 无调用点 |
 | `RFIP_WakeUpRegInit()` | 协议栈 | 无调用点（项目未进入低功耗睡眠） |
 | `RFIP_ReadCrc()` | 协议栈 | 无调用点（判 CRC 走 `RF_STATE_RX_CRCERR`） |
