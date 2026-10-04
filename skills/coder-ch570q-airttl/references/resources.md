@@ -67,10 +67,10 @@ D:\Users\Seahi\Desktop\项目文档\立创电赛\无线串口调试器\CH570Q无
 
 | 工具 | 说明 |
 |---|---|
-| **WCH-Link** | 两线调试器，烧写两颗 CH570Q 必需 |
-| WCH-LinkUtility / WCHISPTool | 沁恒官方 Windows 烧写工具（官网下载中心） |
+| **WCH-Link** | 两线调试器（**调试**用；烧写已改用 Windows 串口 ISP，见 flashing.md 第十一节） |
+| WCH-LinkUtility / WCHISPStudio | 沁恒官方 Windows 烧写工具（官网下载中心） |
 | **OpenOCD（WCH 定制版）** | **已不再随仓库分发**（原 `tools/openocd` 子模块已移除）。Linux x64 预编译版（含 `wlinke` 驱动 + `wch-riscv.cfg`）从这里取：https://github.com/SeaHi-Mo/wch-openocd-linux-x64 |
-| **Windows 版 ISP 工具（推荐烧录方式）** | `WchIspStudio` 图形界面：https://www.wch.cn/downloads/WCHISPTool_Setup_exe.html —— 本项目实际采用 |
+| **Windows 版 ISP 工具（推荐烧录方式）** | `WCHISPStudio` 图形界面：https://www.wch.cn/downloads/WCHISPTool_Setup_exe.html —— 本项目实际采用 |
 | 烧录脚本（OpenOCD） | `skills/coder-ch570q-airttl/scripts/flash.sh` —— 自动挑选可用的 openocd 与 `wch-riscv.cfg`；**实测难连**，见 flashing.md 第十一节 |
 | 仓库内 GDB | `tools/toolchain/bin/riscv-wch-elf-gdb` |
 

@@ -358,7 +358,7 @@ cd ../RF_UartDongle && cmake -B build -G "Unix Makefiles" && cmake --build build
 
 **完整烧录指南见 [references/flashing.md](./references/flashing.md)** —— 含"该用哪份 OpenOCD"、各烧录模式（普通 / 擦除重写 / 解除读保护 / 全片擦除）、**别擦掉从机绑定信息**，以及验证状态说明。最常用的一条命令：
 
-> **烧录方式（本机结论）**：用 **Windows 版 `WchIspStudio.exe`** 烧录 —— 它常驻监听、不用抢上电时机，稳定可靠。
+> **烧录方式（本机结论）**：用 **Windows 版 `WCHISPStudio.exe`** 烧录 —— 它常驻监听、不用抢上电时机，稳定可靠。
 > WSL 侧的 `WCHISPTool_CMD` 路线（子模块 + `isp-flash.sh`）已**弃用并移除**：官方预编译版要求 glibc ≥ 2.33（本机 2.31），
 > 且命令行工具每次只停留检查约 2 秒、叠加 WSL 的 usbip 延迟后经常错过 BOOT 窗口。
 >

@@ -214,7 +214,7 @@ RF_Cmake/
 | 工具链 | 仓库自带的 **`tools/toolchain`** git 子模块（沁恒定制的 `riscv-wch-elf-` GCC 12.2.0，Linux x64），**无需本机安装 MounRiver Studio**。`-march` 里的 `xw` 扩展（`mcpy` 等指令）只有沁恒定制 GCC 支持，**不能换成发行版或 xPack 的 riscv-none-elf-gcc** |
 | CMake | ≥ 3.16 |
 | 构建器 | GNU Make（`Unix Makefiles`），一般发行版自带 |
-| 烧写 | WCH-Link 调试器 + MounRiver Studio 或 OpenOCD |
+| 烧写 | **Windows 上的沁恒官方工具**（`WCHISPStudio` 串口 ISP / `WCH-LinkUtility`），见「六、烧录」 |
 
 ### 2. 拉取代码（含工具链子模块）
 
@@ -299,21 +299,28 @@ cmake --build build -j"$(nproc)"
 
 ## 六、烧录
 
-两颗芯片都是 **CH570Q**，用 **WCH-Link** 通过两线调试口烧写。**两个固件都要烧，别烧错**：主机烧 `RF_UartDongle`，从机烧 `RF_Uart`。
+两颗芯片都是 **CH570Q**。**烧录在 Windows 上完成**（用沁恒官方 Windows 工具），WSL / Linux 侧只负责编译与读日志。**两个固件都要烧，别烧错**：主机烧 `RF_UartDongle`，从机烧 `RF_Uart`。
 
 > **预编译固件**：不想自己编译的话，直接到 [Releases](https://github.com/SeaHi-Mo/Seahi-Serial-AirTTL/releases) 下载 —— `RF_Uart_vX.Y.Z.hex`（从机）、`RF_UartDongle_vX.Y.Z.hex`（主机），以及射频测试固件 `RF_TEST_2474M_ch36_vX.Y.Z.hex` / `RF_TEST_2476M_ch37_vX.Y.Z.hex` / `RF_TEST_2478M_ch38_vX.Y.Z.hex`（分别对应应用频段 2474 / 2476 / 2478 MHz）；每个版本"相对上一版改了什么"都写在 Release 说明里。
->
-> ⚠️ 用 **ISP 串口工具（Windows `WchIspStudio` 等）**烧写时，**不要勾「全片擦除」** —— 会清掉 Flash 末尾 `0x3B000` 的绑定信息（解绑计数正依赖它）。另外 ISP 接线是「**同名相接**」：CH570 的 TXD 接 TTL 的 TXD、RXD 接 RXD，**仅烧录时如此**（正常透传仍是交叉接法）。
 
-### 方式一：MounRiver Studio 图形界面（推荐）
+### 方式一：Windows 官方工具（推荐，本项目实际采用）
 
-1. 打开 MounRiver Studio（Linux 版），`File → Import` 导入 `RF_Uart` / `RF_UartDongle` 工程；
-2. WCH-Link 接上目标板的两线调试口（SWCLK / SWDIO / GND，必要时接 3V3）；
-3. 选中工程 → 工具栏 **Download**（MRS 内部就是 OpenOCD + GDB，配置见工程里的 `.launch` 文件）。
+| 工具 | 走什么接口 | 说明 |
+|---|---|---|
+| **`WCHISPStudio`**（WCH 的 ISP 工具） | **串口 ISP**（接目标板的 `PA0`/`PA1`） | **本项目实际采用的方式**：不依赖 WCH-Link，稳定可靠 |
+| `WCH-LinkUtility` | 两线调试口（WCH-Link） | 有 WCH-Link 时更省事，图形化烧写 + 读保护设置 |
+| MounRiver Studio（**Windows 版**） | 两线调试口（WCH-Link） | 内部就是 OpenOCD + GDB，配置见工程里的 `.launch` 文件 |
 
-### 方式二：命令行 OpenOCD + GDB
+⚠️ **用串口 ISP（`WCHISPStudio`）烧录时注意三条**：
 
-与 MRS 的下载流程等价（复位 → `load` → 运行），适合脚本化 / CI：
+- **不要勾「全片擦除」** —— 会清掉 Flash 末尾 `0x3B000` 的绑定信息（解绑计数正依赖它）；
+- **接线是「同名相接」**：CH570 的 TXD 接 TTL 的 **TXD**、RXD 接 **RXD**（反直觉），**仅烧录时如此**；正常透传仍是交叉接法；
+- **时序**：BOOT 模式是**上电瞬间检测** —— **先让工具开始下载、再给 MCU 上电**（GUI 常驻监听，不用抢时机）。
+
+### 方式二：Linux 命令行 OpenOCD + GDB（**备选**，适合脚本化 / CI）
+
+与 MRS 的下载流程等价（复位 → `load` → 运行）。注意本项目两块板启动后都会**关闭两线调试口**，
+只剩"上电瞬间"的极窄窗口，而 OpenOCD 每次运行都要重新枚举握手、**常常抓不到**，所以只作为备选：
 
 ```bash
 export MRS_HOME="$HOME/MounRiver_Studio2"          # MounRiver Studio 安装根目录（OpenOCD 在里面），按实际修改
@@ -341,7 +348,7 @@ cd RF_Uart
 - 端口与 `.launch` 保持一致：GDB `3333`、Telnet `4444`、OpenOCD Tcl `6666`；
 - 若你的 MRS 版本里 GDB 可执行文件名是 `riscv-none-elf-gdb`，换成对应名字即可；
 - 从机固件运行时会**关闭两线调试功能**（腾出引脚给串口），所以下载失败时先给板子**断电重上电**、或让 WCH-Link 先复位再连；
-- 图形化替代品：沁恒官方的 WCH-LinkUtility / WCHISPTool 是 Windows 版，Linux 下建议直接用上面的 MRS 或 OpenOCD。
+- 沁恒官方的 **WCH-LinkUtility / WCHISPStudio 都是 Windows 版**；本项目的日常工作流就是「**WSL 里编译 + Windows 上烧录**」，命令行 OpenOCD 只在需要脚本化时用。
 
 ---
 

@@ -223,14 +223,15 @@ tools/toolchain/bin/riscv-wch-elf-gdb RF_Uart/build/RF_Uart.elf \
 
 ---
 
-## 六、方法四：Windows 官方工具（备选）
+## 六、方法四：Windows 官方工具（**推荐，本项目实际采用**）
 
 | 工具 | 用途 |
 |---|---|
-| **WCH-LinkUtility** | 图形化烧写/读保护设置，配 WCH-Link 使用 |
-| **WCHISPTool** | USB/串口 ISP 下载（把芯片置于 BOOT 模式后经 USB 或串口烧写），不依赖 WCH-Link |
+| **WCHISPStudio** | **串口 ISP 下载**（把芯片置于 BOOT 模式后经串口烧写）—— **本项目实际采用**，不依赖 WCH-Link |
+| **WCH-LinkUtility** | 图形化烧写 / 读保护设置，配 WCH-Link 使用 |
 
-两者均在沁恒官网下载中心获取（见 [resources.md](./resources.md)）。本项目日常开发用方法一/三即可。
+两者均在沁恒官网下载中心获取（见 [resources.md](./resources.md)）。本项目日常开发**主用 `WCHISPStudio`**
+（理由与接线细节见第十一节），方法一 / 三（OpenOCD / MRS）作为备选。
 
 ---
 
@@ -302,13 +303,13 @@ skills/coder-ch570q-airttl/scripts/flash.sh RF_UartDongle/build/RF_UartDongle.he
 
 ## 十一、烧录方式（本机实践结论）
 
-### 11.1 推荐：Windows 官方 GUI（WchIspStudio）
+### 11.1 推荐：Windows 官方 GUI（WCHISPStudio）
 
-**本项目实际采用的方式**——在 **Windows 上用 `WchIspStudio.exe`** 烧录，稳定可靠。
+**本项目实际采用的方式**——在 **Windows 上用 `WCHISPStudio.exe`** 烧录，稳定可靠。
 
 | 项 | 说明 |
 |---|---|
-| 工具 | [WchIspStudio](https://www.wch.cn/downloads/WCHISPTool_Setup_exe.html)（选型要含 CH570） |
+| 工具 | [WCHISPStudio](https://www.wch.cn/downloads/WCHISPTool_Setup_exe.html)（选型要含 CH570） |
 | **⚠️ 接线（反直觉）** | ISP 烧录必须**同名相接**：**CH570 的 TXD ↔ TTL 的 TXD**、**RXD ↔ RXD**，**不是**常规的「TX↔RX 交叉」。**该接法仅用于 ISP 烧录**；正常透传/通信时仍是交叉接（从机 `PA0=TXD` 接目标板 RX、`PA1=RXD` 接目标板 TX） |
 | 时序 | BOOT 模式是**上电瞬间检测**：**先让工具开始下载、再给 MCU 上电**。GUI 常驻监听，不用抢时机 |
 | 擦除 | **不要勾「全片擦除」** —— 会清掉从机 `0x3B000` 的绑定信息 |
