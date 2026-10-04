@@ -71,6 +71,14 @@ set(CMAKE_C_FLAGS " -march=rv32imc_zba_zbb_zbc_zbs_xw -mabi=ilp32 -mcmodel=medan
 set(CMAKE_CXX_FLAGS " -march=rv32imc_zba_zbb_zbc_zbs_xw -mabi=ilp32 -mcmodel=medany -msmall-data-limit=8 -mno-save-restore -fmax-errors=20 -Os -fmessage-length=0 -fsigned-char -ffunction-sections -fdata-sections -fno-common --param=highcode-gen-section-name=1 -g -std=gnu++11 -fabi-version=0")
 set(CMAKE_ASM_FLAGS " -march=rv32imc_zba_zbb_zbc_zbs_xw -mabi=ilp32 -mcmodel=medany -msmall-data-limit=8 -mno-save-restore -fmax-errors=20 -Os -fmessage-length=0 -fsigned-char -ffunction-sections -fdata-sections -fno-common --param=highcode-gen-section-name=1 -g -x assembler-with-cpp")
 
+# 默认测试频点（定频信道号 0-39，f = 2402 + 2*ch）：
+#   36 → 2474 MHz、37 → 2476 MHz、38 → 2478 MHz
+#   （正好对应应用频段 CH_HOP_TBL = {74,76,78}，见 APP/include/rf_test.h）
+# 配置阶段可覆盖，例如生成 2474 MHz 的固件：
+#   cmake -B build_36 -S . -G "Unix Makefiles" -DRFTEST_DEF_CHANNEL=36
+set(RFTEST_DEF_CHANNEL "37" CACHE STRING "RF_TEST 默认测试频点（定频信道号 0-39，f = 2402 + 2*ch）")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DRFTEST_DEF_CHANNEL=${RFTEST_DEF_CHANNEL}")
+
 add_executable("${TARGET_ARTIFACT}" ${SRC_FILES})
 
 set_target_properties("${TARGET_ARTIFACT}" PROPERTIES LINK_FLAGS " -march=rv32imc_zba_zbb_zbc_zbs_xw -mabi=ilp32 -mcmodel=medany -msmall-data-limit=8 -mno-save-restore -fmax-errors=20 -Os -fmessage-length=0 -fsigned-char -ffunction-sections -fdata-sections -fno-common --param=highcode-gen-section-name=1 -g -T \"${CMAKE_CURRENT_SOURCE_DIR}/Ld/Link.ld\"  -L\"${CMAKE_CURRENT_SOURCE_DIR}/\" -L\"${CMAKE_CURRENT_SOURCE_DIR}/LIB/\" -L\"${CMAKE_CURRENT_SOURCE_DIR}/StdPeriphDriver/\"  -nostartfiles -Xlinker --gc-sections -Xlinker --print-memory-usage -Wl,-Map,\"RF_TEST.map\" --specs=nano.specs --specs=nosys.specs -o \"RF_TEST.elf\" ")

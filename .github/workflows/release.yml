@@ -1,7 +1,7 @@
 name: release
 
 # 打了 v* 的 tag 之后自动触发：
-#   编译 RF_Uart / RF_UartDongle 两个固件
+#   编译 RF_Uart / RF_UartDongle 两个正式固件，外加 RF_TEST 射频测试固件（应用频段三个频点）
 #   → 产出 <固件名>_<版本号>.hex
 #   → 创建（或更新）对应版本的 Release，并自动成为 Latest
 on:
@@ -55,6 +55,16 @@ jobs:
           cmake -B RF_UartDongle/build -S RF_UartDongle -G "Unix Makefiles"
           cmake --build RF_UartDongle/build -j"$(nproc)" 2>&1 | tee RF_UartDongle_build.log
 
+      - name: 编译射频测试固件 RF_TEST（应用频段三个频点）
+        run: |
+          set -euo pipefail
+          # 定频信道号 → 频率：36 → 2474 MHz、37 → 2476 MHz、38 → 2478 MHz
+          # 正好对应应用频段 CH_HOP_TBL = {74,76,78}（见 RF_TEST/APP/include/rf_test.h）
+          for CH in 36 37 38; do
+            cmake -B "RF_TEST/build_${CH}" -S RF_TEST -G "Unix Makefiles" -DRFTEST_DEF_CHANNEL="${CH}"
+            cmake --build "RF_TEST/build_${CH}" -j"$(nproc)" 2>&1 | tee "RF_TEST_build_ch${CH}.log"
+          done
+
       - name: 收集固件（<固件名>_<版本号>.hex）
         env:
           TAG: ${{ steps.ver.outputs.tag }}
@@ -63,6 +73,9 @@ jobs:
           mkdir -p dist
           cp RF_Uart/build/RF_Uart.hex             "dist/RF_Uart_${TAG}.hex"
           cp RF_UartDongle/build/RF_UartDongle.hex "dist/RF_UartDongle_${TAG}.hex"
+          cp RF_TEST/build_36/RF_TEST.hex          "dist/RF_TEST_2474M_ch36_${TAG}.hex"
+          cp RF_TEST/build_37/RF_TEST.hex          "dist/RF_TEST_2476M_ch37_${TAG}.hex"
+          cp RF_TEST/build_38/RF_TEST.hex          "dist/RF_TEST_2478M_ch38_${TAG}.hex"
           ls -l dist/
 
       - name: 生成发布说明
@@ -95,6 +108,11 @@ jobs:
             echo "| --- | --- | --- |"
             echo "| \`RF_Uart_${TAG}.hex\` | 从机（接被调试设备） | CH570Q 从机板 |"
             echo "| \`RF_UartDongle_${TAG}.hex\` | 主机（插电脑 USB） | CH570Q Dongle |"
+            echo "| \`RF_TEST_2474M_ch36_${TAG}.hex\` | 射频测试固件（定频 2474 MHz） | 任意 CH570Q 板 \\* |"
+            echo "| \`RF_TEST_2476M_ch37_${TAG}.hex\` | 射频测试固件（定频 2476 MHz） | 任意 CH570Q 板 \\* |"
+            echo "| \`RF_TEST_2478M_ch38_${TAG}.hex\` | 射频测试固件（定频 2478 MHz） | 任意 CH570Q 板 \\* |"
+            echo ""
+            echo "\\* **RF_TEST 是测试固件，会覆盖板上的正常固件**：上电即定频发射（LED 先闪 1/2/3 次标识频点，随后常亮），配合频谱仪/综测仪测载波频率与功率。三个频点对应应用频段 \`CH_HOP_TBL = {74,76,78}\`。**测完请把从机/主机固件烧回去**，用法见 [RF_TEST/README.md](https://github.com/${REPO}/blob/${TAG}/RF_TEST/README.md)。"
             echo ""
             echo "## 资源占用"
             echo ""
@@ -104,11 +122,14 @@ jobs:
             echo ""
             echo "# RF_UartDongle（主机）"
             sed -n '/Memory region/,/RAM:/p' RF_UartDongle_build.log | head -3
+            echo ""
+            echo "# RF_TEST（射频测试固件）"
+            sed -n '/Memory region/,/RAM:/p' RF_TEST_build_ch37.log | head -3
             echo '```'
             echo ""
             echo "## 烧写"
             echo ""
-            echo "两颗芯片都是 **CH570Q**，用 WCH-Link 通过两线调试口烧写。**两个固件都要烧，别烧错**：主机烧 \`RF_UartDongle_*\`，从机烧 \`RF_Uart_*\`。"
+            echo "两颗芯片都是 **CH570Q**，用 WCH-Link 通过两线调试口烧写。**两个正式固件都要烧，别烧错**：主机烧 \`RF_UartDongle_*\`，从机烧 \`RF_Uart_*\`。"
             echo ""
             echo "- 从机固件运行时会关闭两线调试功能（腾出引脚给串口），下载失败时先给板子断电重上电；"
             echo "- 接线、配对与上位机使用说明见 [README](https://github.com/${REPO}/blob/${TAG}/README.md)。"

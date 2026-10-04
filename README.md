@@ -301,7 +301,7 @@ cmake --build build -j"$(nproc)"
 
 两颗芯片都是 **CH570Q**，用 **WCH-Link** 通过两线调试口烧写。**两个固件都要烧，别烧错**：主机烧 `RF_UartDongle`，从机烧 `RF_Uart`。
 
-> **预编译固件**：不想自己编译的话，直接到 [Releases](https://github.com/SeaHi-Mo/Seahi-Serial-AirTTL/releases) 下载 —— `RF_Uart_vX.Y.Z.hex`（从机）、`RF_UartDongle_vX.Y.Z.hex`（主机）；每个版本"相对上一版改了什么"都写在 Release 说明里。
+> **预编译固件**：不想自己编译的话，直接到 [Releases](https://github.com/SeaHi-Mo/Seahi-Serial-AirTTL/releases) 下载 —— `RF_Uart_vX.Y.Z.hex`（从机）、`RF_UartDongle_vX.Y.Z.hex`（主机），以及射频测试固件 `RF_TEST_2474M_ch36_vX.Y.Z.hex` / `RF_TEST_2476M_ch37_vX.Y.Z.hex` / `RF_TEST_2478M_ch38_vX.Y.Z.hex`（分别对应应用频段 2474 / 2476 / 2478 MHz）；每个版本"相对上一版改了什么"都写在 Release 说明里。
 >
 > ⚠️ 用 **ISP 串口工具（Windows `WchIspStudio` 等）**烧写时，**不要勾「全片擦除」** —— 会清掉 Flash 末尾 `0x3B000` 的绑定信息（解绑计数正依赖它）。另外 ISP 接线是「**同名相接**」：CH570 的 TXD 接 TTL 的 TXD、RXD 接 RXD，**仅烧录时如此**（正常透传仍是交叉接法）。
 
