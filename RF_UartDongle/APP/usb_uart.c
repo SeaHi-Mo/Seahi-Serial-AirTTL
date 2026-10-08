@@ -223,6 +223,8 @@ __aligned(4) uint8_t Ep1OUTDataBuf[MAX_PACKET_SIZE];
 //uint8_t Ep2DataOUTLen = 0;
 //__aligned(4) uint8_t Ep2OUTDataBuf[MAX_PACKET_SIZE];
 uint32_t gEnd2DataLen;
+/* USB OUT 环形缓冲满（PC 灌太快）的次数：只在主循环汇总打印，不在 USB 中断里 PRINT */
+volatile uint16_t gUsbOvfCnt = 0;
 
 /* 保存USB中断的状态 ->改成几组的操作方式 */
 #define USB_IRQ_FLAG_NUM     4
@@ -537,7 +539,7 @@ void USB_IRQHandler(void)
             gEnd2DataLen = write_buf( pUsbBuf,Ep2Buffer, &data_len );
             if( !data_len )
             {
-                PRINT("why??? l=%d\n ", gEnd2DataLen );
+                gUsbOvfCnt++;       /* 环满丢弃：只计数（ISR 里不打印），主循环每秒汇总 */
             }
             if( gEnd2DataLen > (USB_BUF_LEN-MAX_PACKET_SIZE) )
             {

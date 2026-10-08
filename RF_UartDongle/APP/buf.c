@@ -60,7 +60,9 @@ typeBufSize write_buf(struct simple_buf *buf, void *src, typeBufSize *len )
 
     if( free_len < *len )
     {
-        PRINT("#ERR\n");
+#if(defined(BUF_ERR_PRINT)) && (BUF_ERR_PRINT == 1)
+        PRINT("#ERR\n");       /* 见 buf.h：默认关闭（ISR 里忙等打印会自我放大错误率） */
+#endif
         *len = 0;
         return buf->data_len;
     }

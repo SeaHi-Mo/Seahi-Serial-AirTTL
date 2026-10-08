@@ -16,6 +16,15 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* write_buf() 缓冲满时是否打印 #ERR。
+ * 【默认关】write_buf 会在**中断里**被调用（主机的 USB OUT 中断、两端的 RF 接收中断），
+ * 而 PRINT 走忙等 UART（115200 下 5 字节 ≈ 0.43ms）—— 错误率一高就自我放大
+ * （与主机 crc err 同类，见 rf_uart_rx.c 里 gCrcErrCnt 的说明）。
+ * 临时排查要原始打印时把它置 1。调用方可以用 write_buf 的返回值/`*len==0` 判断失败。 */
+#ifndef BUF_ERR_PRINT
+#define BUF_ERR_PRINT   0
+#endif
+
 
 #ifndef typeBufSize
 typedef unsigned long   typeBufSize;

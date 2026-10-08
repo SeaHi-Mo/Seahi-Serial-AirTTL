@@ -91,6 +91,12 @@ static uint8_t gLastDataRspLen = 0;     /* 0 = 当前没有可重发的下行包 */
  * 现在 ISR 只累加计数，主循环每秒最多打印一行。 */
 static volatile uint16_t gCrcErrCnt = 0;    /* RF 中断里的 CRC 错次数 */
 static volatile uint16_t gRxErrCnt  = 0;    /* 收到"序号不认识"的包（失步征兆）次数 */
+static volatile uint16_t gUlostCnt  = 0;    /* 上行数据因 RF 环满被丢的次数（PC 侧来不及取）*/
+static volatile uint16_t gRejCnt    = 0;    /* 配对被拒次数（严格绑定不符 / RSSI 不够）*/
+static volatile uint16_t gRejLocal  = 0;    /* 最近一次被拒时：本机记录的绑定值 */
+static volatile uint16_t gRejRemote = 0;    /* 最近一次被拒时：从机带来的绑定值 */
+static volatile int8_t   gLastRssi  = 0;    /* 最近一次收到的广播 RSSI（配对时看它）*/
+extern volatile uint16_t gUsbOvfCnt;        /* 定义在 usb_uart.c：USB OUT 环满次数 */
 static uint32_t          gDiagLastTick = 0;
 
 /*******************************************************************************
@@ -115,11 +121,21 @@ static void __attribute__((noinline)) rfDiagReport( void )
         return;
     }
     gDiagLastTick = now;
-    if( gCrcErrCnt || gRxErrCnt )
+    if( gCrcErrCnt || gRxErrCnt || gUlostCnt || gUsbOvfCnt )
     {
-        PRINT( "crc %u rxerr %u\n", (unsigned)gCrcErrCnt, (unsigned)gRxErrCnt );
+        PRINT( "crc %u rxerr %u ulost %u usbovf %u\n",
+               (unsigned)gCrcErrCnt, (unsigned)gRxErrCnt,
+               (unsigned)gUlostCnt, (unsigned)gUsbOvfCnt );
         gCrcErrCnt = 0;
         gRxErrCnt  = 0;
+        gUlostCnt  = 0;
+        gUsbOvfCnt = 0;
+    }
+    if( gRejCnt )
+    {
+        PRINT( "rej %u local %x remote %x rssi %d\n",
+               (unsigned)gRejCnt, (unsigned)gRejLocal, (unsigned)gRejRemote, (int)gLastRssi );
+        gRejCnt = 0;
     }
 }
 
@@ -373,12 +389,16 @@ static void rfProcessRx( rfPackage_t *pPkt )
                 }
                 else
                 {
-                    PRINT(" reject.. local=%x remote=%x\n", gServerData, pReq_t->severData);
+                    /* 只计数，不打印：配对阶段从机每 20ms 广播一次，在 ISR 里打印会把
+                     * 主机拖垮（同 crc err 那类问题）。主循环汇总行会带 local/remote/rssi。 */
+                    gRejCnt++;
+                    gRejLocal  = gServerData;
+                    gRejRemote = pReq_t->severData;
                     /* local = 本机记录的绑定；remote = 从机带来的绑定。
                      * 两者不等且 remote != 0 → 严格绑定生效（拒绝），RSSI 不参与判断；
                      * remote == 0 才是"从机未绑定"（走上面的 RSSI 首次配对分支）。 */
                 }
-                PRINT( "rssi=%d \n",rssi);
+                gLastRssi = rssi;
             }
         }
         gRfStatus = RF_STATUS_WAIT;
@@ -482,6 +502,12 @@ static void rfProcessRx( rfPackage_t *pPkt )
                 /* 同 GET_STATUS 分支：新序号 = 上一次的缓存已过期，先作废 */
                 gLastDataRspLen = 0;
                 write_buf( pRfBuf, (pPkt+1), &len );
+                if( !len )
+                {
+                    /* 上行数据被丢：RF 环满（PC 侧来不及取）。只计数 —— 主循环汇总行里的
+                     * `ulost`，用来判断"上行到底有没有丢"，以及是否需要给上行加流控。 */
+                    gUlostCnt++;
+                }
                 gRxDataStatus = DATA_STATUS_RCV;
                 // 如果接收缓存满，则会丢数据
                 len = RSP_DATA_MAX;                 /* 同上：下行单次最长 250 字节 */
