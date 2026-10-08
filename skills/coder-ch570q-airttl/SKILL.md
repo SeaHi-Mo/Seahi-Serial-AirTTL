@@ -283,8 +283,10 @@ CH341 厂商请求要在 EP0 里自己解析：`0x9A` 写寄存器（设波特�
 - **时基是 SysTick 真实时间**：启动时 `LedTimerInit()` 用 `mDelaymS(10)` 标定一次，
   因此周期与主循环跑多快无关。早期"数主循环圈数"的写法已废弃（两端、各状态下快慢都不一致）
 - ⚠️ 标定公式里按 `GetSysClock()/FREQ_SYS` 做了修正：本工程 `FREQ_SYS` 编译期固定
-  100MHz，而**从机实际跑 24MHz**，`mDelaymS()` 在从机上只有标称时长的 24%。
-  从机还在切主频处调用 `LedTimerRescale()` 做比例补偿
+  100MHz，而**从机实际跑 24MHz**（400k~1M 档会切 100MHz），`mDelaymS()` 是**按编译期主频标定的忙等**，
+  在从机上比标称**长** `FREQ_SYS/sysclk` 倍（24MHz 档约 **4.2 倍**：`mDelaymS(50)` ≈ 208ms）。
+  从机在切主频处用 `LedTimerCalibBegin()/LedTimerCalibEnd()` 实测重标；
+  凡是要"真时间"的地方一律用 `rfDelayMs()`（SysTick 版，见 `rf_uart_tx.c`），别用 `mDelaymS()`
 
 **② 主机的 USB 枚举策略**（`RF_UartDongle/APP/main.c` 的 `process_main()`）
 
@@ -438,7 +440,8 @@ git tag -a v0.1.1 -m "..." && git push origin v0.1.1
 | 丢数据 | 三级缓冲任一满都会打印 `#ERR` 并丢包；从机 3KB 串口缓冲、RF/USB 各 512B，高波特率下要留意溢出 |
 | 下载失败 / WCH-Link 连不上 | 固件运行中关了仿真调试接口（PA0/PA1 让给串口），**断电重上电**后再下载 |
 | 改了头文件但行为没变 / 固件仿佛没更新 | CMake 未正确追踪 `.h` 依赖，`cmake --build` 可能不重编 → `touch APP/*.c` 或 `--clean-first`，并用 `md5sum build/*.hex` 确认 |
-| 从机上时间/延时偏快约 4 倍 | `FREQ_SYS` 编译期固定 100000000，而从机实际跑 24MHz，`mDelaymS()`/`mDelayuS()` 只有标称时长的 24%。涉及真实时间的代码要按 `GetSysClock()/FREQ_SYS` 修正（LED 时基即如此） |
+| 从机上 `mDelaymS()` 比标称**长**约 4.2 倍 | `FREQ_SYS` 编译期固定 100000000，而从机实际跑 24MHz（400k~1M 档才切 100MHz）：忙等循环按 100MHz 标定，跑 24MHz 时同样循环更慢 → **真实时长 = 标称 × `FREQ_SYS`/`GetSysClock()`**（`mDelaymS(1)`≈4.2ms、`mDelaymS(50)`≈208ms）。凡涉及真实时间的代码要用 SysTick（`rfDelayMs()` / LED 时基的做法） |
+| 下行延迟忽大忽小（约 10ms ↔ 40ms） | 轮询定时器 `gIntervalTimer` 存的是**计数**、按当时主频算出；`SetSysClock()` 切主频后若没重算，24MHz 下会从 5ms/tick 变成 20.8ms/tick（轮询 41.7ms）。切主频处必须补 `UART_SetTimer(gInterval)`（见 `rf_uart_tx.c` 的 BSP 分支） |
 | 未配对时 PC 上看不到 Dongle 串口 | **有意设计**：未与从机连接时不枚举 USB，配对成功后才出现（见第六节 §5） |
 | WSL 里烧录，OpenOCD 报 `Error: open failed` | WCH-LinkE 插在 Windows 上但**没映射进 WSL**（或 `vhci_hcd` 未加载、`usbip` 客户端缺失）→ 见 [references/wsl-usbip.md](./references/wsl-usbip.md) |
 | WSL 里烧录，OpenOCD 报 `libusb_open() failed with LIBUSB_ERROR_ACCESS` | USB 设备节点属主是 root，普通用户无写权限 → 加 udev 规则或 `sudo` 跑，见 [references/wsl-usbip.md](./references/wsl-usbip.md) 第四节 |

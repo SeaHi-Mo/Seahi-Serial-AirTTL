@@ -44,6 +44,7 @@ static void rfProcessTimeout( void );
 void LedTimerCalibBegin( void );
 void LedTimerCalibEnd( void );
 void LedDataPulse( void );          /* 定义在文件后部，此处前置声明避免隐式声明告警 */
+static void __attribute__((noinline)) rfDelayMs( uint32_t ms );   /* SysTick 真实毫秒延时，见定义处 */
 
 // tf status callbacks
 rfStatusCBs_t rfCBs =
@@ -199,7 +200,11 @@ static void rfProcessRx( rfPackage_t *pPkt )
                     gRfRxFlag = write_buf( pRfBuf, pRsp_t->other.rspData, &len );
                     if( !len )
                     {
+                        /* 缓冲满：默认丢弃（RF_RX_FULL_BLOCK=0），可选老行为 UART_Send 忙等，
+                         * 见 uart.h 里 RF_RX_FULL_BLOCK 的说明。 */
+#if(defined(RF_RX_FULL_BLOCK)) && (RF_RX_FULL_BLOCK == 1)
                         UART_Send(pRsp_t->other.rspData,pPkt_t->length-PKT_DATA_OFFSET-1);
+#endif
                     }
                     if( !R8_UART_TFC )
                     {
@@ -262,6 +267,16 @@ static void rfProcessRx( rfPackage_t *pPkt )
                 LedTimerCalibEnd( );                /* 主频变了必须实测重标，不能按比例推算 */
 
                 UART_SetBuad( pRsp_t->buad_t.BaudRate );
+                /* 【主频一变，轮询定时器的"计数"必须重算】gIntervalTimer 存的是**计数**，由
+                 * UART_SetTimer() 按当时主频算出：100MHz 下 ms=10 → 500000 计数（5ms/tick，
+                 * 两个 tick 一次轮询 = 10ms）；同一份计数放到 24MHz 上就变成 20.8ms/tick，
+                 * 轮询周期 41.7ms —— 下行延迟肉眼可见（实测上位机看到 51ms）。反过来
+                 * （24MHz 算出、跑在 100MHz）轮询会快到 2.4ms，白白占空口。所以每次切完
+                 * 主频都要按当前主频重算并重启这个定时器。 */
+                if( gInterval )
+                {
+                    UART_SetTimer( gInterval );
+                }
                 // 停止位
                 if( pRsp_t->buad_t.StopBits )
                 {
@@ -312,15 +327,20 @@ static void rfProcessRx( rfPackage_t *pPkt )
                  * ST_ISP_FUNC 置 FALSE。 */
                 if(pRsp_t->other.rspData[0]==0x7f && (pPkt_t->length-PKT_DATA_OFFSET-1)==1)
                 {
+                    /* 【这里必须用 SysTick 版延时】mDelaymS() 是按编译期 FREQ_SYS=100MHz
+                     * 标定的软件循环，从机跑 24MHz 时同样的循环会长约 4.2 倍 —— 标称的
+                     * 1/1/1/50 ms 实际会变成 4.2/4.2/4.2/208 ms，而且 400k~1M 档（切
+                     * 100MHz）又变回准的：时序随主频档位漂。rfDelayMs() 用 LedTimerInit()
+                     * 标定过的 SysTick，任何主频下都是真实毫秒。 */
                     //BOOT脚拉高、RESET低电平复位进BOOT
                     GPIOA_SetBits( BOOT_PIN );
-                    mDelaymS(1);
+                    rfDelayMs(1);
                     GPIOA_ResetBits( RESET_PIN );
-                    mDelaymS(1);
+                    rfDelayMs(1);
                     GPIOA_SetBits( RESET_PIN );
-                    mDelaymS(1);
+                    rfDelayMs(1);
                     GPIOA_ResetBits( BOOT_PIN );
-                    mDelaymS(50);
+                    rfDelayMs(50);
                 }
 #endif
                 {
@@ -329,7 +349,10 @@ static void rfProcessRx( rfPackage_t *pPkt )
                     gRfRxFlag = write_buf( pRfBuf, pRsp_t->other.rspData, &len );
                     if( !len )
                     {
+                        /* 同 ACK 分支：默认丢弃，RF_RX_FULL_BLOCK=1 时为老行为（忙等发完） */
+#if(defined(RF_RX_FULL_BLOCK)) && (RF_RX_FULL_BLOCK == 1)
                         UART_Send(pRsp_t->other.rspData,pPkt_t->length-PKT_DATA_OFFSET-1);
+#endif
                     }
                     if( !R8_UART_TFC )
                     {
@@ -397,7 +420,13 @@ static void rfProcessTx( void )
 __HIGH_CODE
 static  void rfProcessTimeout( void )
 {
-    gTxBuf.status = STA_RESEND;
+    /* 【只在"真有包在等应答"时才重传】原实现无条件置 STA_RESEND：空闲时（STA_IDLE）
+     * 一个杂散的超时/CRC 事件也会把**上一包**（旧 seq）再发一次 —— 白占空口，对端还会
+     * 收到 seq 不匹配的重复包。只有 STA_BUSY（已发出、正等应答）才需要重传。 */
+    if( gTxBuf.status == STA_BUSY )
+    {
+        gTxBuf.status = STA_RESEND;
+    }
     if( gRfStatus == RF_STATUS_WAITRSP )
     {
         gTxBuf.resendCount = RESEND_COUNT;
@@ -428,8 +457,14 @@ static  void rfProcessTimeout( void )
 static uint32_t gLedHalfTicks  = 0;
 static uint32_t gLedPulseTicks = 0;             /* 数据提示脉冲宽度（计数） */
 static uint32_t gLedCalClock   = 0;
-static volatile uint32_t gLedDataTick  = 0;     /* 最近一次数据活动的时刻 */
-static volatile uint8_t  gLedDataActive = 0;    /* 是否有数据活动待显示 */
+/* 【数据提示改用"序号闩锁"，不再"时刻比对"】ISR 只累加计数，主循环看到计数变了才用**自己采样的**
+ * SysTick 起一段完整提示。原写法是"ISR 记时刻 + 主循环拿早先采样好的 now 去比"：只要 RF 接收
+ * 中断正好落在"采样 now"与"读时刻"之间（约 8~10 个周期 ≈0.35us），now 就比时刻旧，相减下溢成
+ * 巨大值 → 判定"已过期"并把脉冲清掉 → 表现为"数据收到了、灯偶尔不闪"。闩锁写法没有这个竞态，
+ * 而且 ISR 里即使被 UART_Send() 阻塞上百毫秒，提示也照样完整显示 LED_DATA_PULSE_MS 毫秒。 */
+static volatile uint8_t  gLedPulseCnt  = 0;     /* ISR：有新数据活动就 +1 */
+static uint8_t           gLedPulseSeen = 0;     /* 主循环：已消费到哪个计数 */
+static uint32_t          gLedLitStart  = 0;     /* 主循环：本次提示起点（SysTick 计数） */
 
 uint32_t gLedTicksPerMs = 0;                    /* 每毫秒的 SysTick 计数（标定） */
 
@@ -521,8 +556,7 @@ void LedTimerCalibEnd( void )
 void LedDataPulse( void )
 {
 #if(defined(LED_FUNC)) && (LED_FUNC == TRUE) && (LED_DATA_BLINK == 1)
-    gLedDataTick   = SysTick->CNT;
-    gLedDataActive = 1;
+    gLedPulseCnt ++;        /* 只累加、不取时刻：见 gLedPulseCnt 定义处的说明 */
 #endif
 }
 
@@ -544,6 +578,52 @@ void LedTimerInit( void )
     mDelaymS( 10 );                             /* 软件延时 10ms 作参考 */
     LedTimerCalibEnd( );
 }
+
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+/*******************************************************************************
+ * @fn      LedStatusQuery
+ *
+ * @brief   LED 指示：未连接 → 快闪（周期 = LED_BLINK_MS*2 ms）；连接成功 → 熄灭，
+ *          但收发数据时亮 LED_DATA_PULSE_MS 毫秒（脉冲由 LedDataPulse() 以序号闩锁置位）。
+ *          ledcount 当"上次翻转时的 SysTick 计数"用，与主循环速度无关。
+ *
+ *          刻意**不加 __HIGH_CODE**：人眼看灯不是时序敏感路径，主循环每圈调一次即可；
+ *          放进 .highcode 会白占从机 RAM（从机只剩几百字节）。主机 LedStatusQuery() 同样处理。
+ *
+ * @return  None.
+ */
+static void __attribute__((noinline)) LedStatusQuery( void )
+{
+    uint32_t now = SysTick->CNT;
+    uint8_t  lit = 0;
+
+    if( gLinkStable )
+    {
+#if(LED_DATA_BLINK == 1)
+        if( gLedPulseCnt != gLedPulseSeen )     /* 有新的数据活动 → 起一段完整提示 */
+        {
+            gLedPulseSeen = gLedPulseCnt;
+            gLedLitStart  = now;                /* 从"主循环看到"这一刻起算 */
+        }
+        if( (uint32_t)( now - gLedLitStart ) < gLedPulseTicks )
+        {
+            lit = 1;
+        }
+#endif
+        if( lit )   GPIOA_SetBits(LED_PIN);        /* 数据活动 → 亮一下 */
+        else        GPIOA_ResetBits(LED_PIN);      /* 平时熄灭 */
+        ledcount = 0;
+    }
+    else
+    {
+        if( (uint32_t)( now - ledcount ) >= gLedHalfTicks )
+        {
+            GPIOA_InverseBits(LED_PIN);
+            ledcount = now;
+        }
+    }
+}
+#endif
 
 /*******************************************************************************
  * @fn      RF_StatusQuery
@@ -586,41 +666,7 @@ void RF_StatusQuery( void )
     }
 
 #if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
-    /* LED 指示：未连接 → 快闪（周期 = LED_BLINK_MS*2 ms）；
-     * 连接成功 → 熄灭，但收发数据时亮 LED_DATA_PULSE_MS 毫秒。
-     * ledcount 当"上次翻转时的 SysTick 计数"用，与主循环速度无关。 */
-    {
-        uint32_t now = SysTick->CNT;
-        uint8_t  lit = 0;
-
-        if( gLinkStable )
-        {
-#if(LED_DATA_BLINK == 1)
-            if( gLedDataActive )
-            {
-                if( (uint32_t)( now - gLedDataTick ) < gLedPulseTicks )
-                {
-                    lit = 1;
-                }
-                else
-                {
-                    gLedDataActive = 0;
-                }
-            }
-#endif
-            if( lit )   GPIOA_SetBits(LED_PIN);        /* 数据活动 → 亮一下 */
-            else        GPIOA_ResetBits(LED_PIN);      /* 平时熄灭 */
-            ledcount = 0;
-        }
-        else
-        {
-            if( (uint32_t)( now - ledcount ) >= gLedHalfTicks )
-            {
-                GPIOA_InverseBits(LED_PIN);
-                ledcount = now;
-            }
-        }
-    }
+    LedStatusQuery( );          /* LED 指示（定义见文件后部，刻意不进 .highcode，省 RAM） */
 #endif
     if( gTxBuf.status == STA_IDLE )
     {
@@ -693,7 +739,7 @@ void RF_StatusQuery( void )
                 PRINT("*%d %d\n",gTxBuf.resendCount,gTxDataSeq);
             }
             gRfStatus = RF_STATUS_RETX;
-            if( gTxBuf.resendCount != 0xFF ) gTxBuf.resendCount--;
+            gTxBuf.resendCount--;       /* 0xFF 那种"无限重传"没有任何地方设置，原 guard 是死代码 */
             gTxBuf.status = STA_BUSY;
             rf_tx_start( gTxBuf.TxBuf, 60 );
         }
@@ -735,9 +781,9 @@ static void rfFlashFailAlarm( void )
     for( i = 0; i < 20; i++ )
     {
         GPIOA_SetBits( LED_PIN );
-        mDelaymS( 100 );
+        rfDelayMs( 100 );   /* 必须真实毫秒：mDelaymS 在 24MHz 档会被拉长 4.2 倍（4 秒报警变 16.7 秒） */
         GPIOA_ResetBits( LED_PIN );
-        mDelaymS( 100 );
+        rfDelayMs( 100 );
     }
 #endif
 }
@@ -788,19 +834,20 @@ static int rfSaveBoundInfo( rfBoundInfo_t *info )
 }
 
 /*******************************************************************************
- * @fn      rfLedDelayMs
+ * @fn      rfDelayMs
  *
- * @brief   启动提示用的"真实毫秒"延时。
+ * @brief   通用的"真实毫秒"延时：启动 LED 提示、一键下载(RESET/BOOT)时序、Flash 失败报警都用它。
  *
- *          mDelaymS() 是按编译期 FREQ_SYS=100MHz 标定的软件循环，而从机实际跑
- *          24MHz，同样的循环会长约 3 倍 —— 用它做"数几次"的提示根本不准。
+ *          mDelaymS() 是按编译期 FREQ_SYS=100MHz 标定的软件循环，而从机实际跑 24MHz 时
+ *          同样的循环会长约 4.2 倍（100MHz 档又正常）—— 凡是要"真时间"的地方都不能用它。
  *          这里用 LedTimerInit() 标定过的 SysTick，必须在 LedTimerInit() 之后调用。
+ *
+ *          刻意 noinline 且**不加** __HIGH_CODE（延时只读 SysTick，放进 RAM 白占从机内存）。
  *
  * @param   ms 毫秒数
  * @return  None.
  */
-#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
-static void __attribute__((noinline)) rfLedDelayMs( uint32_t ms )
+static void __attribute__((noinline)) rfDelayMs( uint32_t ms )
 {
     uint32_t t0;
 
@@ -814,7 +861,6 @@ static void __attribute__((noinline)) rfLedDelayMs( uint32_t ms )
     {
     }
 }
-#endif
 
 /*******************************************************************************
  * @fn      rfBootCountStartup
@@ -871,7 +917,7 @@ static void __attribute__((noinline)) rfBootCountStartup( void )
 #if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
         /* 解绑成功提示：常亮 2 秒（与"启动短闪 N 次""失败急促闪"截然不同的模式） */
         GPIOA_SetBits( LED_PIN );
-        rfLedDelayMs( 2000 );
+        rfDelayMs( 2000 );
         GPIOA_ResetBits( LED_PIN );
 #endif
     }
@@ -893,9 +939,9 @@ static void __attribute__((noinline)) rfBootCountStartup( void )
             for( i = 0; i < gBootCount; i++ )
             {
                 GPIOA_SetBits( LED_PIN );
-                rfLedDelayMs( 100 );
+                rfDelayMs( 100 );
                 GPIOA_ResetBits( LED_PIN );
-                rfLedDelayMs( 250 );
+                rfDelayMs( 250 );
             }
         }
 #endif

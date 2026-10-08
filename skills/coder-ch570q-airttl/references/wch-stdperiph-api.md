@@ -434,8 +434,8 @@ GET_UNIQUE_ID(uid);
 
 | 函数 | 原型 | 参数 | 返回值 | 作用 |
 | --- | --- | --- | --- | --- |
-| **★ `mDelaymS`** | `void mDelaymS(uint16_t t);` | `t`：毫秒（**uint16_t，最大 65535**） | 无 | 毫秒级**忙等**延时 |
-| **★ `mDelayuS`** | `void mDelayuS(uint16_t t);` | `t`：微秒（**uint16_t**） | 无 | 微秒级**忙等**延时 |
+| **★ `mDelaymS`** | `void mDelaymS(uint16_t t);` | `t`：毫秒（**uint16_t，最大 65535**） | 无 | 毫秒级**忙等**延时。⚠️ 循环次数按编译期 `FREQ_SYS` 标定，**实际主频低于 `FREQ_SYS` 时延时偏长**（24MHz/100MHz 档下约 **×4.2**：`mDelaymS(50)`≈208ms）；要"真时间"请用 SysTick 计时（本项目 `rfDelayMs()`） |
+| **★ `mDelayuS`** | `void mDelayuS(uint16_t t);` | `t`：微秒（**uint16_t**） | 无 | 微秒级**忙等**延时（同样随主频比例变化） |
 | `DelayMs(x)` / `DelayUs(x)` | （`CH57x_common.h` 里的宏） | 同上 | 无 | `mDelaymS` / `mDelayuS` 的别名 |
 
 **使用注意（★）**

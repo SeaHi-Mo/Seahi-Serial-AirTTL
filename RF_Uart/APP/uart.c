@@ -97,6 +97,10 @@ void TMR_IRQHandler(void) // 定时中断
 __HIGH_CODE
 void UART_SetTimer( uint16_t ms )
 {
+    if( ms == 0 )
+    {
+        ms = 1;     /* 重载值 0 会让定时器中断连续触发、主循环被淹没 —— 兜底 */
+    }
     gSysClock = GetSysClock();
     gIntervalTimer =  gSysClock/2000*ms;
     R8_TMR_CTRL_MOD = RB_TMR_ALL_CLEAR;
@@ -135,8 +139,13 @@ uint8_t UART_RxQuery( void *buf, typeBufSize *len )
     {
         if ( read_buf( pUartbuf, buf, len ) == 0 )
         {
+            /* 【必须连 TMR 中断一起关】TMR 会在下面两行之间把 uart_flag 置成 RCVING/
+             * RCV_END；被这里的 START 覆盖后，新到的那帧就一直躺在环形缓冲里，要等下次
+             * 再来字节才会被读走（表现为"孤立一帧卡住不上去"）。 */
             PFIC_DisableIRQ( UART_IRQn );
+            PFIC_DisableIRQ( TMR_IRQn );
             uart_flag = UART_STATUS_START;
+            PFIC_EnableIRQ( TMR_IRQn );
             PFIC_EnableIRQ( UART_IRQn );
         }
         if( *len )  return 0;
@@ -145,8 +154,11 @@ uint8_t UART_RxQuery( void *buf, typeBufSize *len )
     else if( uart_flag == UART_STATUS_SEND )
     {
         *len = 0;
+        /* 同上：不关 TMR 的话，中断刚置上的 RCVING/RCV_END 会被这行 START 吃掉 */
         PFIC_DisableIRQ( UART_IRQn );
+        PFIC_DisableIRQ( TMR_IRQn );
         uart_flag = UART_STATUS_START;
+        PFIC_EnableIRQ( TMR_IRQn );
         PFIC_EnableIRQ( UART_IRQn );
         return 0x80;
     }

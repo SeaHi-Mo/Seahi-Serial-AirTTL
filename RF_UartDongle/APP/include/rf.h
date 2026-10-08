@@ -106,6 +106,11 @@ typedef struct
 #define  DATA_LEN_MAX_TX    (251)  //!< the max length of rf tx. [251]
 #define  BUF_LEN_TX         (DATA_LEN_MAX_TX+PKT_HEAD_LEN)
 
+/* 应答/捎带载荷单次最多能放的字节数：rfRsp_t 的 rspData 从 TxBuf[PKT_HEAD_LEN+1] 起，
+ * 而 TxBuf 只有 BUF_LEN_TX 字节 —— 主机下行单次最多取这么多，取满 251 会写到
+ * TxBuf[BUF_LEN_TX]（越界 1 字节；当前恰好落进 typeBufSize 的对齐填充，属 UB）。 */
+#define  RSP_DATA_MAX       (BUF_LEN_TX - PKT_HEAD_LEN - 1)   //!< = 250
+
 #define  DATA_LEN_MAX_RX     BUF_LEN_TX  //!< the max length of rf rx.
 
 #define  BOUND_EST_COUNT    6

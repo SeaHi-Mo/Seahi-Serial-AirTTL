@@ -350,7 +350,7 @@ static void rfProcessRx( rfPackage_t *pPkt )
             if( pPkt->seq == gDataSeq )
             {
                 uint8_t s;
-                typeBufSize len = DATA_LEN_MAX_TX;
+                typeBufSize len = RSP_DATA_MAX;     /* 250：rspData 从 TxBuf[5] 起，取 251 会越界 1 字节 */
                 pPkt_t->type = PKT_CMD_RSP_STATUS;
                 /* 【先作废旧缓存 —— 修「最后一包多发 1~3 次」】8 位 seq 每 256 次交换
                  * 就绕回一圈（空闲轮询约 2.5 s），而旧缓存只有在「又发了一包下行数据」
@@ -442,7 +442,7 @@ static void rfProcessRx( rfPackage_t *pPkt )
                 write_buf( pRfBuf, (pPkt+1), &len );
                 gRxDataStatus = DATA_STATUS_RCV;
                 // 如果接收缓存满，则会丢数据
-                len = DATA_LEN_MAX_TX;
+                len = RSP_DATA_MAX;                 /* 同上：下行单次最长 250 字节 */
                 pPkt_t->type = PKT_DATA_RSP_ACK;
                 
                 if( gBoundStatus == BOUND_STATUS_EST && !USB_RxQuery( pRsp_t->other.rspData, &len ) )
@@ -570,8 +570,12 @@ static void rfProcessTimeout( void )
 /* LED 时基：SysTick 自由计数 + 启动标定，使闪烁周期是真实时间 */
 static uint32_t gLedHalfTicks  = 0;
 static uint32_t gLedPulseTicks = 0;             /* 数据提示脉冲宽度（计数） */
-static volatile uint32_t gLedDataTick  = 0;     /* 最近一次数据活动的时刻 */
-static volatile uint8_t  gLedDataActive = 0;    /* 是否有数据活动待显示 */
+/* 【与从机同一套改法：序号闩锁替代"时刻比对"】原写法"ISR 记时刻 + 主循环用早先采样的 now 比"，
+ * 中断落在采样点与读时刻之间时会下溢 → 误判过期并清掉脉冲 → 数据收到了灯偶尔不闪。
+ * 现在 ISR 只累加计数，主循环看到计数变化才用自己采样的 SysTick 起一段完整提示。 */
+static volatile uint8_t  gLedPulseCnt  = 0;     /* ISR：有新数据活动就 +1 */
+static uint8_t           gLedPulseSeen = 0;     /* 主循环：已消费到哪个计数 */
+static uint32_t          gLedLitStart  = 0;     /* 主循环：本次提示起点（SysTick 计数） */
 
 uint32_t gLedTicksPerMs = 0;                    /* 每毫秒的 SysTick 计数（启动标定） */
 
@@ -659,8 +663,7 @@ void LedTimerInit( void )
 void LedDataPulse( void )
 {
 #if(defined(LED_FUNC)) && (LED_FUNC == TRUE) && (LED_DATA_BLINK == 1)
-    gLedDataTick   = SysTick->CNT;
-    gLedDataActive = 1;
+    gLedPulseCnt ++;        /* 只累加、不取时刻：见 gLedPulseCnt 定义处的说明 */
 #endif
 }
 
@@ -704,16 +707,14 @@ void LedStatusQuery( void )
     if( gLinkStable )
     {
 #if(LED_DATA_BLINK == 1)
-        if( gLedDataActive )
+        if( gLedPulseCnt != gLedPulseSeen )     /* 有新的数据活动 → 起一段完整提示 */
         {
-            if( (uint32_t)( now - gLedDataTick ) < gLedPulseTicks )
-            {
-                lit = 1;
-            }
-            else
-            {
-                gLedDataActive = 0;
-            }
+            gLedPulseSeen = gLedPulseCnt;
+            gLedLitStart  = now;                /* 从"主循环看到"这一刻起算 */
+        }
+        if( (uint32_t)( now - gLedLitStart ) < gLedPulseTicks )
+        {
+            lit = 1;
         }
 #endif
         if( lit )   GPIOA_SetBits(LED_PIN);        /* 数据活动 → 亮一下 */
