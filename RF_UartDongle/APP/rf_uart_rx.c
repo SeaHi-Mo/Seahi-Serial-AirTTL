@@ -321,7 +321,7 @@ static void rfProcessRx( rfPackage_t *pPkt )
                     }
                     pRsp_t->phy = CONN_PHY_TYPE; // 2M
                     pRsp_t->severData = gServerData;
-                    pRsp_t->interval = CONN_INTERVAL;
+                    pRsp_t->interval = POLL_INTERVAL_MS;    /* 从机轮询周期，与 CONN_INTERVAL 解耦 */
                     pRsp_t->timeout = CONN_TIMEOUT;
                     rf_tx_start( pPkt_t, 20 );
                     gDataSeq++;
