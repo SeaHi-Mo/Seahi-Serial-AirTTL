@@ -352,6 +352,14 @@ static void rfProcessRx( rfPackage_t *pPkt )
                 uint8_t s;
                 typeBufSize len = DATA_LEN_MAX_TX;
                 pPkt_t->type = PKT_CMD_RSP_STATUS;
+                /* 【先作废旧缓存 —— 修「最后一包多发 1~3 次」】8 位 seq 每 256 次交换
+                 * 就绕回一圈（空闲轮询约 2.5 s），而旧缓存只有在「又发了一包下行数据」
+                 * 时才会被覆盖。于是从机绕回后重发同一个 seq 时，rfResendCached() 会把
+                 * 几秒前那包数据当成新应答重发出去 —— 从机照收，目标设备就多收一个
+                 * 重复包（实测 300 帧里多出 1 帧，100 B/帧 → 多 99 B）。所以每条
+                 * 【新序号】的应答都先把缓存作废，只有本次真的捎带了下行数据时才由
+                 * rfCacheDownlink() 重新填上。 */
+                gLastDataRspLen = 0;
                 if( gBoundStatus < BOUND_STATUS_EST  )
                 {
                     // 发送串口波特率
@@ -429,6 +437,8 @@ static void rfProcessRx( rfPackage_t *pPkt )
             {
                 typeBufSize len = pPkt->length;
                 len -= PKT_DATA_OFFSET;
+                /* 同 GET_STATUS 分支：新序号 = 上一次的缓存已过期，先作废 */
+                gLastDataRspLen = 0;
                 write_buf( pRfBuf, (pPkt+1), &len );
                 gRxDataStatus = DATA_STATUS_RCV;
                 // 如果接收缓存满，则会丢数据
