@@ -201,7 +201,10 @@ CH570E / CH570Q / CH570D 的引脚排布不同（手册表 1-2 三列）。**改
   - 本项目实测 **31.999954 MHz（−1.4 ppm）**；牵引率 ≈ 10.5 ppm/pF（片内每档 2 pF ≈ 21 ppm）
   - **两个固件必须同值**（`RF_Uart` / `RF_UartDongle` 各一份），否则两侧频差会吃掉链路余量
   - 标定与重标方法见 [wch-stdperiph-api.md](./wch-stdperiph-api.md) §1.2 与 README「三、晶振与负载电容」
-- 主频可切：从机默认 24 MHz，检测到波特率 400 kbps~1 Mbps 时切 **100 MHz**；主机固定 100 MHz
+- 主频可切：从机默认 24 MHz，检测到波特率 **400 kbps ~ 1 Mbps** 时切 **100 MHz**；主机固定 100 MHz
+- ⚠️ UART 只有**整数**分频 `DL = round(Fsys/8/baud)`（`R16_UART_DL`；`R8_UART_DIV` 预分频官方 SDK 未用），
+  实际波特率是一组离散格点，高波特率下偏差明显：请求 2 Mbps 在 24 MHz 只能得 1.5 Mbps（−25%）、100 MHz 得 2.083 Mbps（+4.2%）→
+  本项目从机固件因此把波特率**上限夹在 1.5 Mbps**
 
 ---
 

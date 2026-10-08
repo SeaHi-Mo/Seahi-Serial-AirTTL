@@ -236,6 +236,19 @@ static void rfProcessRx( rfPackage_t *pPkt )
             // 状态应答为对端设备波特率
             else if( pRsp_t->opcode == OPCODE_BSP )
             {
+                /* 【波特率上限 1500000】从机 UART 只有**整数**分频（DL = round(Fsys/8/baud)），
+                 * 而它的串口直接对目标设备（用户按标准值设置），所以"实际码率"必须尽量等于请求值：
+                 *   1.5 Mbps @24M → DL=2 → 1.500000M（0%）
+                 *   3   Mbps @24M → DL=1 → 3.000000M（0%，但链路吞吐只有 27~50 KB/s，毫无收益）
+                 *   2   Mbps      → 24M 只能 1.5M（-25%）、100M 只能 2.083M（+4.2%）→ 都不准，实测乱码
+                 *   4   Mbps      → 100M 只能 4.1667M（+4.2%），且电脑端端口根本打不开
+                 * 所以直接把上限收到 **1.5 Mbps**：超过就夹到 1.5 Mbps，不让从机悄悄跑在
+                 * 一个偏差 25% 的码率上（那种情况下上位机只会看到乱码，很难查）。 */
+                if( pRsp_t->buad_t.BaudRate > 1500000u )
+                {
+                    pRsp_t->buad_t.BaudRate = 1500000u;
+                }
+
                 if((pRsp_t->buad_t.BaudRate > 400000) && (pRsp_t->buad_t.BaudRate < 1000000))
                 {
                     SetSysClock(CLK_SOURCE_HSE_PLL_100MHz);
