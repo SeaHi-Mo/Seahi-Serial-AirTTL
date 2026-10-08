@@ -81,6 +81,48 @@ uint8_t gRxDataStatus;
 static uint8_t gLastDataRsp[BUF_LEN_TX];
 static uint8_t gLastDataRspLen = 0;     /* 0 = 当前没有可重发的下行包 */
 
+/* ---- 诊断计数（**只在主循环里限速打印**）----------------------------------------
+ * 【为什么绝不能在这些 ISR 里 PRINT】dbg_printf -> _uart_putc 是**忙等**：
+ *   115200 下 1 字节 87us，"crc err\n" 8 字节 ≈ **0.7ms**。
+ * 在 RF 接收中断里打印 = 每次 CRC 错都让主机停 0.7ms：
+ *   错误率一高 → 主机回包被拖到从机 150us 接收窗口之外 → 从机重传 →
+ *   与主机"迟到"的回包在空口相撞 → 更多 CRC 错 → 更多打印 —— **正反馈雪崩**。
+ * 实测现象就是"持续发送久了大量 crc err"，跟着链路卡死 1s 被看门狗断开。
+ * 现在 ISR 只累加计数，主循环每秒最多打印一行。 */
+static volatile uint16_t gCrcErrCnt = 0;    /* RF 中断里的 CRC 错次数 */
+static volatile uint16_t gRxErrCnt  = 0;    /* 收到"序号不认识"的包（失步征兆）次数 */
+static uint32_t          gDiagLastTick = 0;
+
+/*******************************************************************************
+ * @fn      rfDiagReport
+ *
+ * @brief   主循环诊断打印：每秒最多一行，把 ISR 里累加的计数报出来。
+ *          刻意 noinline 且**不加** __HIGH_CODE（RAM 省着用）。
+ *
+ * @return  None.
+ */
+static void __attribute__((noinline)) rfDiagReport( void )
+{
+    uint32_t now = SysTick->CNT;
+
+    if( gDiagLastTick == 0 )
+    {
+        gDiagLastTick = now;
+        return;
+    }
+    if( (uint32_t)( now - gDiagLastTick ) < LedMsToTicks( 1000 ) )
+    {
+        return;
+    }
+    gDiagLastTick = now;
+    if( gCrcErrCnt || gRxErrCnt )
+    {
+        PRINT( "crc %u rxerr %u\n", (unsigned)gCrcErrCnt, (unsigned)gRxErrCnt );
+        gCrcErrCnt = 0;
+        gRxErrCnt  = 0;
+    }
+}
+
 static void rfProcessRx( rfPackage_t *pPkt );
 static void rfProcessTx( void );
 static void rfProcessCrcError( void );
@@ -480,7 +522,7 @@ static void rfProcessRx( rfPackage_t *pPkt )
         }
         else
         {
-            PRINT("error data.\n");
+            gRxErrCnt++;        /* 只计数：在主循环里每秒汇总一次（同上，ISR 里不打印） */
             if( ++gTimeout > gTimeoutMax )
             {
                 gRxDataStatus = DATA_STATUS_TIMEOUT;
@@ -537,10 +579,8 @@ __HIGH_CODE
 static void rfProcessCrcError( void )
 {
     gRfStatus = RF_STATUS_WAIT;
-    /* 【诊断】CRC 错以前是**静默**的，导致"偶发丢包"在主机 log 里完全看不到
-     * （之前 1% 的帧丢失就是这么查了半天）。日志走 PA3 调试口，不碰数据线；
-     * 若环境噪声大导致刷屏，删掉这一行即可。 */
-    PRINT("crc err\n");
+    /* 只计数、不打印：见 gCrcErrCnt 定义处的说明（在 ISR 里 PRINT 会自我放大错误率） */
+    gCrcErrCnt++;
 }
 
 /*******************************************************************************
@@ -743,9 +783,9 @@ void LedStatusQuery( void )
 __HIGH_CODE
 uint8_t RF_RxQuery( void *buf, typeBufSize *len )
 {
-
-
     uint8_t *p;
+
+    rfDiagReport( );        /* 诊断汇总（每秒最多一行），只在主循环里做 */
 
     if( gRxDataStatus == DATA_STATUS_RCV )
     {
