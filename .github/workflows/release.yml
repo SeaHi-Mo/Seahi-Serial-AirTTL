@@ -97,17 +97,26 @@ jobs:
         run: |
           set -euo pipefail
           # 把 tag 注解（annotated tag）并进发布说明放在最前面。
-          # 打 tag 时用 `git tag -a vX.Y.Z -F notes.md --cleanup=verbatim` 写好 changelog，
-          # 这样 Release 页就能直接看到"相对上一版增加了什么"。
-          # 轻量 tag 没有注解（%(contents) 只会回一个 tag 名），这里自动跳过。
+          # 发布说明来源（优先级从高到低）：
+          #   ① `.github/release-notes/${TAG}.md` —— 推荐。changelog 跟代码一起走 PR/评审，
+          #      也不必把长文本塞进 tag 对象里；
+          #   ② tag 注解（annotated tag 的 %(contents)）—— 兜底。轻量 tag 取不到，自动跳过。
+          # 【为什么优先用文件】实测在某些受限网络（代理/隧道 MTU 问题）下，推送体积稍大的
+          # annotated tag 对象会卡死，而几百字节的注解能推上去 —— 所以让 tag 注解保持一句话，
+          # 详细内容放在仓库文件里。
           # 注意：`git tag -F` 默认按 `--cleanup=strip` 处理，## 开头的行会被当注释删掉，
-          # 所以务必显式带上 --cleanup=verbatim。
+          # 若确实要写长注解务必显式带上 --cleanup=verbatim。
+          NOTES_FILE=".github/release-notes/${TAG}.md"
           TAG_TYPE="$(git for-each-ref "refs/tags/${TAG}" --format='%(objecttype)' 2>/dev/null || true)"
           TAG_NOTES=""
-          if [ "${TAG_TYPE}" = "tag" ]; then
+          if [ -f "${NOTES_FILE}" ]; then
+            TAG_NOTES="$(cat "${NOTES_FILE}")"
+            echo "发布说明取自 ${NOTES_FILE}（$(wc -c < "${NOTES_FILE}") 字节）"
+          elif [ "${TAG_TYPE}" = "tag" ]; then
             TAG_NOTES="$(git for-each-ref "refs/tags/${TAG}" --format='%(contents)' 2>/dev/null || true)"
+            echo "发布说明取自 tag 注解（${#TAG_NOTES} 字符）"
           else
-            echo "警告：${TAG} 不是 annotated tag（objecttype=${TAG_TYPE}），发布说明将不含 tag 注解"
+            echo "警告：无 ${NOTES_FILE}，且 ${TAG} 不是 annotated tag（objecttype=${TAG_TYPE}），发布说明将不含变更内容"
           fi
           {
             if [ -n "${TAG_NOTES}" ]; then
