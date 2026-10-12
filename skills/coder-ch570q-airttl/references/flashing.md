@@ -333,3 +333,88 @@ skills/coder-ch570q-airttl/scripts/flash.sh RF_UartDongle/build/RF_UartDongle.he
 | 6 | 找不到有效 ISP 设备 |
 | **7** | **串口已打开但读不到芯片信息** —— 通常仍未进 BOOT（BOOT 只在上电瞬间存在）；串口权限不足也会报此码 |
 | 13 / 14 | 下载失败 / 校验失败 |
+
+---
+
+## 十二、⚠️ 封壳/整机后怎么重烧（待办方案，2026-10-12 记录）
+
+**背景**：dongle 装进外壳后 **PA0/PA1（= USB 座的 D−/D+）摸不到**，第十一节那套串口 ISP（要在上电瞬间抢握手窗口）就没法做了；本项目也没引出调试排针。本节记录**已核实的事实**、**待核实项**与**可选方案**——**尚未实施**。
+
+### 12.1 已核实的事实
+
+| 事实 | 依据 |
+|---|---|
+| CH572/CH570 的 **USB 下载口 = `PA0_D−` / `PA1_D+`**；**串口下载口 = `PA0_RX` / `PA1_TX`** —— **同一对脚** | WCH ISP 方式汇总表（见 12.7） |
+| CH572/CH570 **没有 BOOT 脚**（表里"可选进 ISP IO = **无**"）；**默认进 ISP 的判据是 `PA1` 高电平**；**"串口下载超时或关闭免按键 → 转 USB 下载检测（UDP 高 / UDM 低）"** | 同上 |
+| CH57x/CH58x 进 BOOT 的**唯一时机是"上电复位后"**；串口免按键要求**工具先发握手 + 板子重新上电**（窗口约 40ms） | 12.7 第 3 条 |
+| **空片（0 地址为擦除态 0xFF…）时上电会停在 ISP 不跳转** —— 全新芯片第一次上电必进 bootloader | 12.7 第 3、4 条 |
+| 于是有官方认可的"软件进 BOOT"套路：**擦 0 地址 4KB + 伪上电复位** | 12.7 第 4 条 |
+| dongle 的 **PA0/PA1 就接在 USB 座上**：`USB_Init()` 必须关仿真调试口（上电默认 PA0/PA1 = SWDIO/SWCLK），且 dongle 固件**不对 PA0/PA1 做任何 GPIO/UART 配置**，调试串口在 PA3/PA2 | `RF_UartDongle/APP/usb_uart.c:2046`、`APP/main.c:72-73`、README 引脚表 |
+| dongle 固件里**没有任何"进 BOOT / 自更新"入口**：唯一的 Flash 写是绑定信息（`0x3B000`） | `RF_UartDongle/APP/rf_uart_rx.c:41-58` |
+
+**一个能解释很多现象的推论**：`PA1` = D+。
+
+- **插在 PC 的 USB 口上时**：主机 D+/D− 各有 15k 下拉 → **上电瞬间 PA1 是低** → ROM 让 App 启动（这就是平时插上就能正常工作的原因）；
+- **接 TTL 适配器时**：适配器的 TX 空闲是**推挽高电平** → 把 TX 接到 PA1 就能让它上电为高 → **必进 ISP**。
+
+第十一节那条"**同名相接**（TXD↔TXD、RXD↔RXD）"的反直觉经验，背后的原因就是这个。
+
+### 12.2 ROM 层面：没有"直接进 BOOT"的 API
+
+- 能用的是：`FLASH_EEPROM_CMD()`（擦/写/校验/读 ROM 信息/MAC/BOOT 信息）、`SYS_GetInfoSta()`、`SYS_ResetExecute()`；**没有 `EnterIsp()` 这类函数**。
+- `R8_GLOB_CFG_INFO (0x40001045)` 是 **RO**：`RB_CFG_BOOT_EN(0x08)`、`RB_BOOT_LOADER(0x20)`、`RB_CFG_RST_PIN(0x10)`、`RB_BOOT_LOAD_MAN(0x01)` **都只能读**（`CH572SFR.h:238-249`）→ 不能靠"置个位就进 BOOT"。
+
+### 12.3 方案 A：USB 座 → USB-TTL 转接线，走串口免按键（**用于第一次，不用改固件**）
+
+| 项 | 内容 |
+|---|---|
+| 接线 | `VBUS→适配器 5V`、`GND→GND`、**`D+(PA1) → 适配器 TX`**、**`D−(PA0) → 适配器 RX`** |
+| 电平 | **必须 3.3V**（PA0/PA1 在手册引脚表里没有 `5VT` 标记，不是 5V 耐压） |
+| 原理 | PA1 被适配器 TX 拉高 → 进 ISP；工具认的是**适配器自己的 COM 口**，**不依赖"芯片能否被 USB 枚举出来"** |
+| 操作 | WCHISPStudio 选**串口** + 该 COM 口 → 点下载 → **再给板子上电**（拔插适配器那头，或 5V 线上串开关） |
+| ⚠️ | 接转接线时**不能同时插 PC 的 USB 口**（PC 侧 15k 下拉会把 PA1 拉低）；**别勾「全片擦除」**（会清掉 `0x3B000` 绑定信息） |
+
+### 12.4 方案 B：固件内加"一条命令进 BOOT"（之后不再需要转接线）
+
+```c
+__HIGH_CODE                                   /* 必须跑在 RAM：向量表就在扇区 0 */
+void APPJumpBoot( void )
+{
+    while ( FLASH_ROM_ERASE( 0, 4096 ) )      /* 只擦 0 号扇区 → 营造"空片" */
+        ;
+    FLASH_ROM_SW_RESET();                     /* ROM 函数，安全 */
+
+    sys_safe_access_enable();                 /* SDK 宏：内部自带关中断+解锁（CH57x_sys.h:179） */
+    R16_INT_LSI_TUNE = 0xFFFF;                /* ★ 让这次复位"看起来像上电复位"（ROM 的判据） */
+    R8_RST_WDOG_CTRL |= RB_SOFTWARE_RESET;
+    sys_safe_access_disable();
+
+    while ( 1 );                              /* 停在 BOOT 等烧写（10s；ISP 工具开着 60s） */
+}
+```
+
+- `R16_INT_LSI_TUNE = 0xFFFF` 这句有来历：**WCH 自己的 `HardFault_Handler()` 就是这么做的**（`CH57x_sys.c:283-291`，注释写着"复位类型为**上电复位**"）。
+- 实现约束：全在 `.highcode`(RAM) 执行、**先关全局中断**（向量表在扇区 0）、**只调 ROM 函数**（`FLASH_ROM_ERASE`/`FLASH_ROM_SW_RESET` 在 ROM 里，安全）、safe-access 用 SDK 宏（是宏不是函数，不会踩 Flash）、**只擦 0 号扇区**（别碰绑定信息）。
+- **可重复**：0 地址一旦是空片，**每次上电都停在 BOOT**，错过 10s 窗口重新上电即可（不存在"只有一次机会"）。代价是执行后 App 已毁，必须重烧一次；ROM 在掩模里，**永远救得回**。
+- 触发入口（待定）：① USB 侧厂商请求/魔数；② 从机经无线下发；③ 上电时某可见脚（PA7/LED）拉低若干秒。
+- **从机（CH570Q）同样适用**：从机也能"擦 0 扇区 + 伪上电复位"进 BOOT，之后用现成的 USB-TTL 接它的 PA0/PA1（就是它的目标串口）烧，连"抢上电时序"都省了。
+
+### 12.5 方案 C（最彻底，工程量中等）：A/B 自更新
+
+App 自己当升级通道（PC 经 USB、或经从机走无线把新固件喂进来）→ 写**非活动槽** → 校验 → 切标志复位 → 由 `0x0000` 的常驻搬运代码切换。**不需要 ISP 工具/驱动/设备列表**，两块板都能纯软件更新；代价是动 Flash 布局（避开 `0x3B000` 绑定信息区）并处理"写一半掉电"。
+
+### 12.6 待核实 / 待定（TODO）
+
+- [ ] 按原理图/万用表核：USB 座 D± 到 PA0/PA1 之间有无串阻/ESD/中间器件；VBUS 是否就是板子 5V 输入；PA0/PA1 是否 5V 耐压。
+- [ ] 实测**方案 A**（转接线）能否进 ISP —— 这是"第一次"唯一不拆壳的路径。
+- [ ] 定**方案 B** 的触发入口并实现（建议先做 USB 触发）；顺手给从机也做一份。
+- [ ] 决定是否上**方案 C**。
+- 同队列的遗留（与本主题无关）：`rfFlashFailAlarm()` 擦写失败报警 4 秒阻塞在 RF 中断里；主机停止位初值（`HAL_UART_ONE_STOP_BIT=1`）被从机解释成 **2 个停止位**；README/skill 里"时延 / LED / DTR-RTS"几处行为描述尚未与最近三个固件 commit 同步。
+
+### 12.7 参考
+
+- [WCH ISP 方式汇总表（各芯片 USB/串口下载 IO、进 ISP 判据）](https://www.cnblogs.com/debugdabiaoge/p/18814305)
+- [CH57x/CH58x 芯片下载（USB 下载需 CH372 驱动，会多出 "USB Module" 设备）](https://www.cnblogs.com/gscw/p/16034836.html)
+- [CH57xx/CH58xx 固件下载_串口免按键下载操作](https://www.cnblogs.com/j02346/p/22589091)
+- [擦除 0 地址 codeflash 营造空片现象 → 自动进入 BootLoader（含 CH572 代码）](https://www.cnblogs.com/azou/p/18744838)
+- WCH 社区帖（页面需 JS，正文未抓到）：`thread-153396-1.html`（CH572 的 `RB_BOOT_LOAD_MAN` 如何置位）、`thread-160667-1.html`（CH567 无物理按键 OTA）、`thread-86914-1.html`（CH582M 装整机后如何使用 USB 升级）

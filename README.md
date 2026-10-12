@@ -310,6 +310,8 @@ cmake --build build -j"$(nproc)"
 - **接线是「同名相接」**：CH570 的 TXD 接 TTL 的 **TXD**、RXD 接 **RXD**（反直觉），**仅烧录时如此**；正常透传仍是交叉接法；
 - **时序**：BOOT 模式是**上电瞬间检测** —— **先让工具开始下载、再给 MCU 上电**（GUI 常驻监听，不用抢时机）。
 
+> **⚠️ 装进外壳之后上面这套就做不了了** —— `PA0/PA1`（= USB 座的 `D−`/`D+`）摸不到。免拆壳的三条路（**USB 下载** / **「USB 座 → USB-TTL」串口免按键** / **固件内"一条命令进 BOOT"**）以及全部事实依据与待办，见 [`skills/coder-ch570q-airttl/references/flashing.md`](skills/coder-ch570q-airttl/references/flashing.md) **第十二节**。
+
 ### 方式二：Linux 命令行 OpenOCD + GDB（**备选**，适合脚本化 / CI）
 
 与 MRS 的下载流程等价（复位 → `load` → 运行）。注意本项目两块板启动后都会**关闭两线调试口**，
