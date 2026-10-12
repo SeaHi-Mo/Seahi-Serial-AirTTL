@@ -51,6 +51,38 @@
 #define    RESET_PIN      (1<<2)    /* PA2 */
 #define    BOOT_PIN       (1<<3)    /* PA3 */
 
+/* 【DTR/RTS 响应时延（毫秒）】电脑端改 DTR/RTS 后，从机**整包一起**延迟这么久才把
+ * DTR->PA3、RTS->PA2 搬过去（0 = 收到即动，老行为）。
+ *
+ * 为什么要这个时延：这一包与"线码变更"共用 OPCODE_BSP，而这两个脚是"断言 = 输出低"
+ * 地直接怼在目标 RESET/BOOT0 上的，所以：
+ *   · 让同一包里 DTR/RTS 在**同一时刻**稳定生效（不会一边先动、一边后动）；
+ *   · 连续翻转只保留最终值、且从**最后一次**变化起算 → 上位机开端口/切线路时那几
+ *     毫秒的毛刺翻转会被自然滤掉。
+ * 实现上**不在中断里阻塞等待**：中断只记下最终值 + 时刻，主循环到期才搬 GPIO
+ * （见 rf_uart_tx.c 的 rfQueueDtrRts / rfFlushDtrRts）。所以本值不占中断时间、
+ * 不影响 LED 刷新与轮询。
+ * 注意这是"从机侧"的时延：端到端 = 轮询等待(0~POLL_INTERVAL_MS) + 空口 + 主机 USB
+ * (约 1ms) + 本值，量级约 (本值 + 2) ms。想马上动就置 0。 */
+#ifndef DTR_RTS_RESP_MS
+#define DTR_RTS_RESP_MS    10
+#endif
+
+/* 【RTS 释放后的保持低时间（毫秒）】主机把 RTS 从"断言"改回"未断言"后，从机 PA2 还要**再保持
+ * 低这么久**才回到默认高 —— 保证目标吃到足够宽的复位低电平（很多 MCU 要求 RESET 低 ≥ 几十微秒，
+ * 而这个值给的是"毫秒级余量"）。
+ *
+ * 语义（与 DTR 故意不同）：
+ *   · DTR（PA3 -> BOOT0）：**纯跟随**主机，断言拉低、释放拉高，不自动恢复 —— 进 Bootloader
+ *     要能把 BOOT0 一直按住；
+ *   · RTS（PA2 -> RESET）：断言立即拉低；主机释放后再保持低本值毫秒才回高。
+ *     低电平宽度 = 主机按住的时长 + DTR_RTS_RESP_MS + 本值。
+ * 主机在窗口内又按下 RTS → 窗口取消、继续压住（不会中途回高）；主机连着发同样的"已释放"
+ * 状态则不会反复续期。0 = 不做（释放即跟随，等于纯跟随）。 */
+#ifndef RTS_RELEASE_HOLD_MS
+#define RTS_RELEASE_HOLD_MS    30
+#endif
+
 /**
  * @brief   ST 一键下载（下行恰好一个字节 0x7F 时跑 RESET/BOOT 时序）
  * @note    与上面的 DTR/RTS 直控**复用同一对引脚、互不冲突**：平时引脚跟随 PC 的
@@ -118,6 +150,7 @@ enum uart_status
 #define  DATA_LEN_UART       (32)
 
 extern uint8_t gBoundStatus;
+extern uint32_t gBaudRate;      /* 当前已生效的波特率（UART_SetBuad 维护）：线码判等用 */
 
 void UART_Init(void);
 uint8_t UART_RxQuery( void *buf, typeBufSize *len );

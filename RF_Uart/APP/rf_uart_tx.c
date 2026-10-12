@@ -78,31 +78,224 @@ static void rf_buffer_create(struct simple_buf **buf)
     *buf = simple_buf_create(&rf_buffer, rf_buf, sizeof(rf_buf) );
 }
 
-/*******************************************************************************
- * @fn      rfApplyDtrRts
- *
- * @brief   把主机下发的 modem 输出位搬到 PA2/PA3（DTR/RTS）。
- *
- *          刻意**不加** __HIGH_CODE 且 noinline：本函数只在收到 OPCODE_BSP 时执行，
- *          时序不敏感；而调用它的 rfProcessRx() 本身在 .highcode（RAM），
- *          内联回去会让这几十字节白占 RAM（从机 RAM 已到 95.9%，96% 出头就不稳）。
- *
- * @param   ioStaus 主机下发的 modem 输出位：bit5=DTR、bit6=RTS，1 = 未断言（输出高）
- *          —— 映射到 **DTR->PA3、RTS->PA2**（见 uart.h 的引脚定义）
- * @return  None.
- */
 #if((defined(DTR_RTS_FUNC)) && (DTR_RTS_FUNC == TRUE))
-static void __attribute__((noinline)) rfApplyDtrRts( uint8_t ioStaus )
-{
-    // DTR 电平状态（PA3）
-    if( ioStaus & 0x20 ) GPIOA_SetBits( DTR_PIN );
-    else                 GPIOA_ResetBits( DTR_PIN );
+/* ===================== 【DTR/RTS 生效规则】 =====================
+ * DTR（PA3 -> 目标 BOOT0）与 RTS（PA2 -> 目标 RESET）**故意不同**：
+ *   · DTR：纯跟随主机 —— 断言拉低、释放拉高，不自动恢复（进 Bootloader 要能把 BOOT0 按住）；
+ *   · RTS：断言拉低；主机**释放后还要保持低 RTS_RELEASE_HOLD_MS（默认 30ms）**才回到默认高，
+ *          保证目标吃到足够宽的复位低电平。
+ *          低电平宽度 = 主机按住的时长 + 采集延时(DTR_RTS_RESP_MS) + RTS_RELEASE_HOLD_MS。
+ * 两脚的默认电平都是"未断言 = 输出高"；未配对 / 断链时立即回到默认电平（不把目标按在复位上）。
+ *
+ * 为什么不在 ISR 里直接搬引脚（老行为：在 RF 回调里直接写 PA2/PA3）：
+ *   1) 这一包同时还可能带线码变更，老实现把 SetSysClock + mDelaymS(10) + LED 重标定 都跑在
+ *      RF 中断里（24MHz 档 mDelaymS(10) 真实 41.7ms）—— 引脚边沿被排在这段之后，实测要
+ *      十几~几十毫秒才动，而且主循环（LED 全靠它刷）被整段冻结；
+ *   2) "整包延后固定毫秒数"和"释放后保持 N 毫秒"在中断里都没法非阻塞地等。
+ * 做法：ISR 只记**最终值 + 时刻**（与老的"只保留最终值"语义一致），主循环
+ *       RF_StatusQuery() 每圈调 rfFlushDtrRts() 到期搬 GPIO。零阻塞、不占中断时间。
+ * 竞态说明：共享变量都按 volatile 访问。即使"主循环清标志"与"ISR 写新值"交叠，
+ *      最坏也只是把同一个电平多写一次 —— GPIOA 的 SET/CLR 是原子的，写同一电平无副作用。 */
+static volatile uint8_t  gIoPending;        /* 有未生效的 IO 状态（ISR 置 1，主循环清 0） */
+static volatile uint8_t  gIoStausPending;   /* 最后一次下发的 ioStaus（只保留最终值） */
+static volatile uint32_t gIoTickPending;    /* 最后一次下发的时刻（SysTick 计数） */
+/* 下面三个同样会被 ISR（断链时的 rfDtrRtsToDefault）读改，所以一并 volatile */
+static volatile uint8_t  gHostRts;          /* 主机 RTS 的逻辑电平：1 = 未断言（默认高） */
+static volatile uint8_t  gRtsHoldActive;    /* 正在跑"主机释放后保持低"的窗口 */
+static volatile uint32_t gRtsHoldTick;      /* 该窗口的起点（SysTick 计数） */
 
-    // RTS 电平状态（PA2）
-    if( ioStaus & 0x40 ) GPIOA_SetBits( RTS_PIN );
-    else                 GPIOA_ResetBits( RTS_PIN );
+/* 两脚回到默认（未断言 = 输出高），并丢掉等待中的 IO 状态。
+ * 上电与断链时调用：断链不把目标一直按在复位上。 */
+static void __attribute__((noinline)) rfDtrRtsToDefault( void )
+{
+    GPIOA_SetBits( DTR_PIN | RTS_PIN );
+    gHostRts       = 1;
+    gRtsHoldActive = 0;
+    gIoPending     = 0;
+}
+
+static void __attribute__((noinline)) rfQueueDtrRts( uint8_t ioStaus )
+{
+    gIoStausPending = ioStaus;
+    gIoTickPending  = SysTick->CNT;         /* 从"最后一次变化"起算 → 天然滤掉短毛刺 */
+    gIoPending      = 1;
+}
+
+/* 主循环调用：① 先看"主机释放后保持低"窗口到期没有；② 再把到期的 IO 状态搬下去。
+ * 刻意不加 __HIGH_CODE（省从机 RAM，主循环调它不敏感）。 */
+static void __attribute__((noinline)) rfFlushDtrRts( void )
+{
+    uint8_t io;
+
+    /* ① 主机已释放 RTS：保持低满 RTS_RELEASE_HOLD_MS 才回默认高（只动 PA2，不碰 DTR） */
+    if( gRtsHoldActive
+     && (uint32_t)( SysTick->CNT - gRtsHoldTick ) >= LedMsToTicks( RTS_RELEASE_HOLD_MS ) )
+    {
+        gRtsHoldActive = 0;
+        GPIOA_SetBits( RTS_PIN );
+    }
+
+    /* ② 到期的 IO 状态 */
+    if( !gIoPending )
+    {
+        return;
+    }
+#if (DTR_RTS_RESP_MS != 0)
+    if( (uint32_t)( SysTick->CNT - gIoTickPending ) < LedMsToTicks( DTR_RTS_RESP_MS ) )
+    {
+        return;
+    }
+#endif
+    io = (uint8_t)gIoStausPending;
+    gIoPending = 0;                         /* 先清标志：此后新事件重新排队（见上面竞态说明） */
+
+    /* 【等待期间掉链了就不再搬】否则可能把断链时刚拉高的 PA2 又按回低电平。
+     * 未配对时主机本就下不发 ioStaus，所以这个判断不会挡掉正常的首次同步。 */
+    if( !RF_bound_Flag )
+    {
+        return;
+    }
+
+    /* DTR（PA3）：纯跟随主机，不自动恢复 */
+    if( io & 0x20 )     GPIOA_SetBits( DTR_PIN );
+    else                GPIOA_ResetBits( DTR_PIN );
+
+    /* RTS（PA2）：断言立即拉低；释放沿起一个"保持低"窗口 */
+    if( !( io & 0x40 ) )                    /* 主机断言 RTS */
+    {
+        gHostRts       = 0;
+        gRtsHoldActive = 0;                 /* 又按下了：取消待恢复，继续压住 */
+        GPIOA_ResetBits( RTS_PIN );
+    }
+    else if( !gHostRts )                    /* 0 -> 1 释放沿：起窗口，引脚先保持低 */
+    {
+        gHostRts       = 1;
+        gRtsHoldActive = 1;
+        gRtsHoldTick   = SysTick->CNT;
+    }
+    else if( !gRtsHoldActive )              /* 早就释放、窗口也过了：确认是默认高 */
+    {
+        GPIOA_SetBits( RTS_PIN );
+    }
 }
 #endif
+
+/*******************************************************************************
+ * @fn      rfApplyLineCode
+ *
+ * @brief   把主机下发的串口线码（波特率/停止位/校验/数据位）落到从机 UART。
+ *
+ *          ★ 这里有两个"省"：
+ *          1) **判等在前**：ioStaus(DTR/RTS) 与线码共用 OPCODE_BSP，老实现每改一次
+ *             DTR/RTS 都要把这一整段重跑一遍（含 SetSysClock 与 mDelaymS(10)，而
+ *             mDelaymS(10) 在 24MHz 档真实要 41.7ms）—— 主循环/LED 被整段冻结，
+ *             DTR/RTS 边沿还被排在这段之后（实测十几~几十毫秒才动）。现在按寄存器
+ *             现状判等，线码没变直接返回，DTR/RTS 走调用方的延时队列。
+ *          2) **刻意不加 __HIGH_CODE**（放 Flash）：调用方 rfProcessRx() 在 .highcode
+ *             (RAM)，靠 noinline 把这段留在 Flash —— 内联回去会让这一百多字节白占
+ *             从机 RAM（从机只剩几百字节，96% 出头就跑不稳）。
+ *
+ * @param   pRsp  PKT_CMD_RSP_STATUS 里带的线码 + ioStaus（BaudRate 会被就地夹上限）
+ * @return  None.
+ */
+static void __attribute__((noinline)) rfApplyLineCode( rfRsp_t *pRsp )
+{
+    uint8_t  lcr;
+    uint32_t clkBefore;
+
+    if( !pRsp )             /* 入参校验：调用方传的是 RxBuf 内的应答体，正常非空 */
+    {
+        return;
+    }
+
+    /* 【波特率上限 1500000】从机 UART 只有**整数**分频（DL = round(Fsys/8/baud)），
+     * 而它的串口直接对目标设备（用户按标准值设置），所以"实际码率"必须尽量等于请求值：
+     *   1.5 Mbps @24M → DL=2 → 1.500000M（0%）
+     *   3   Mbps @24M → DL=1 → 3.000000M（0%，但链路吞吐只有 27~50 KB/s，毫无收益）
+     *   2   Mbps      → 24M 只能 1.5M（-25%）、100M 只能 2.083M（+4.2%）→ 都不准，实测乱码
+     *   4   Mbps      → 100M 只能 4.1667M（+4.2%），且电脑端端口根本打不开
+     * 所以直接把上限收到 **1.5 Mbps**：超过就夹到 1.5 Mbps，不让从机悄悄跑在
+     * 一个偏差 25% 的码率上（那种情况下上位机只会看到乱码，很难查）。 */
+    if( pRsp->buad_t.BaudRate > 1500000u )
+    {
+        pRsp->buad_t.BaudRate = 1500000u;
+    }
+
+    /* 【只在"线码真的变了"时才跑重配】判据与下面写寄存器的顺序一一对应：波特率看
+     * gBaudRate（UART_SetBuad 维护），停止位/校验/数据位看 R8_UART_LCR 的现状 ——
+     * 这样不用新增任何 RAM 变量来记"上次下发的是什么"。
+     * 数据位按**写入效果**比较（都要 &3）：老实现是 `LCR |= (DataBits-5)` 而 LCR 里只有低
+     * 两位有效，所以 DataBits=0（主机侧未初始化）等于 8 位，不能拿 0-5=251 去比。 */
+    lcr = R8_UART_LCR;
+    if( !( (pRsp->buad_t.BaudRate != gBaudRate)
+        || ((uint8_t)(lcr & RB_LCR_WORD_SZ)        != (uint8_t)((pRsp->buad_t.DataBits-5)&3))
+        || ((uint8_t)((lcr & RB_LCR_STOP_BIT)?1:0) != (uint8_t)(pRsp->buad_t.StopBits?1:0))
+        || ((uint8_t)((lcr & RB_LCR_PAR_EN)?1:0)   != (uint8_t)(pRsp->buad_t.ParityType?1:0))
+        || ((pRsp->buad_t.ParityType)
+            && ((uint8_t)((lcr & RB_LCR_PAR_MOD)>>4) != (uint8_t)((pRsp->buad_t.ParityType-1)&3))) ) )
+    {
+        return;
+    }
+
+    clkBefore = GetSysClock( );
+    if((pRsp->buad_t.BaudRate > 400000) && (pRsp->buad_t.BaudRate < 1000000))
+    {
+        SetSysClock(CLK_SOURCE_HSE_PLL_100MHz);
+    }
+    else
+    {
+        SetSysClock(CLK_SOURCE_HSE_PLL_24MHz);
+    }
+    /* 【只在主频真的变了才重标 LED 时基】标定拿 mDelaymS(10) 的固定循环数当基准，
+     * 24MHz 档要实打实跑 41.7ms；主频没变就没理由付这个代价。 */
+    if( GetSysClock( ) != clkBefore )
+    {
+        LedTimerCalibBegin( );
+        mDelaymS(10);
+        LedTimerCalibEnd( );
+    }
+
+    UART_SetBuad( pRsp->buad_t.BaudRate );
+    /* 【主频一变，轮询定时器的"计数"必须重算】gIntervalTimer 存的是**计数**，由
+     * UART_SetTimer() 按当时主频算出：100MHz 下 ms=10 → 500000 计数（5ms/tick，
+     * 两个 tick 一次轮询 = 10ms）；同一份计数放到 24MHz 上就变成 20.8ms/tick，
+     * 轮询周期 41.7ms —— 下行延迟肉眼可见（实测上位机看到 51ms）。反过来
+     * （24MHz 算出、跑在 100MHz）轮询会快到 2.4ms，白白占空口。所以每次切完
+     * 主频都要按当前主频重算并重启这个定时器。 */
+    if( gInterval )
+    {
+        UART_SetTimer( gInterval );
+    }
+    // 停止位
+    if( pRsp->buad_t.StopBits )
+    {
+        R8_UART_LCR |= RB_LCR_STOP_BIT ; // 2个停止位
+    }
+    else
+    {
+        R8_UART_LCR &= ~RB_LCR_STOP_BIT;// 1个停止位
+    }
+
+    // 奇偶校验
+    if( pRsp->buad_t.ParityType )
+    {
+        R8_UART_LCR &= ~RB_LCR_PAR_MOD;
+        R8_UART_LCR |= ((pRsp->buad_t.ParityType-1)&3)<<4;
+        R8_UART_LCR |= RB_LCR_PAR_EN;
+    }
+    else
+    {
+        R8_UART_LCR &= ~RB_LCR_PAR_EN;
+    }
+
+    // 数据位
+    R8_UART_LCR &= ~RB_LCR_WORD_SZ;
+    R8_UART_LCR |= (pRsp->buad_t.DataBits-5);
+    if( pRsp->buad_t.DataBits )
+    {
+
+    }
+}
 
 /*******************************************************************************
  * @fn      rf_disconnect
@@ -125,6 +318,9 @@ static void rf_disconnect( void )
     rf_rx_set_frequency( DEF_FREQUENCY );
 
     RF_bound_Flag = 0;
+#if((defined(DTR_RTS_FUNC)) && (DTR_RTS_FUNC == TRUE))
+    rfDtrRtsToDefault( );               /* 断链：PA2/PA3 立即回默认高，别把目标按在复位上 */
+#endif
     PRINT("disconnect.\n" );
 }
 
@@ -241,75 +437,13 @@ static void rfProcessRx( rfPackage_t *pPkt )
             // 状态应答为对端设备波特率
             else if( pRsp_t->opcode == OPCODE_BSP )
             {
-                /* 【波特率上限 1500000】从机 UART 只有**整数**分频（DL = round(Fsys/8/baud)），
-                 * 而它的串口直接对目标设备（用户按标准值设置），所以"实际码率"必须尽量等于请求值：
-                 *   1.5 Mbps @24M → DL=2 → 1.500000M（0%）
-                 *   3   Mbps @24M → DL=1 → 3.000000M（0%，但链路吞吐只有 27~50 KB/s，毫无收益）
-                 *   2   Mbps      → 24M 只能 1.5M（-25%）、100M 只能 2.083M（+4.2%）→ 都不准，实测乱码
-                 *   4   Mbps      → 100M 只能 4.1667M（+4.2%），且电脑端端口根本打不开
-                 * 所以直接把上限收到 **1.5 Mbps**：超过就夹到 1.5 Mbps，不让从机悄悄跑在
-                 * 一个偏差 25% 的码率上（那种情况下上位机只会看到乱码，很难查）。 */
-                if( pRsp_t->buad_t.BaudRate > 1500000u )
-                {
-                    pRsp_t->buad_t.BaudRate = 1500000u;
-                }
-
-                if((pRsp_t->buad_t.BaudRate > 400000) && (pRsp_t->buad_t.BaudRate < 1000000))
-                {
-                    SetSysClock(CLK_SOURCE_HSE_PLL_100MHz);
-                }
-                else
-                {
-                    SetSysClock(CLK_SOURCE_HSE_PLL_24MHz);
-                }
-                LedTimerCalibBegin( );              /* 顺便用这次延时重新标定 LED 时基 */
-                mDelaymS(10);
-                LedTimerCalibEnd( );                /* 主频变了必须实测重标，不能按比例推算 */
-
-                UART_SetBuad( pRsp_t->buad_t.BaudRate );
-                /* 【主频一变，轮询定时器的"计数"必须重算】gIntervalTimer 存的是**计数**，由
-                 * UART_SetTimer() 按当时主频算出：100MHz 下 ms=10 → 500000 计数（5ms/tick，
-                 * 两个 tick 一次轮询 = 10ms）；同一份计数放到 24MHz 上就变成 20.8ms/tick，
-                 * 轮询周期 41.7ms —— 下行延迟肉眼可见（实测上位机看到 51ms）。反过来
-                 * （24MHz 算出、跑在 100MHz）轮询会快到 2.4ms，白白占空口。所以每次切完
-                 * 主频都要按当前主频重算并重启这个定时器。 */
-                if( gInterval )
-                {
-                    UART_SetTimer( gInterval );
-                }
-                // 停止位
-                if( pRsp_t->buad_t.StopBits )
-                {
-                    R8_UART_LCR |= RB_LCR_STOP_BIT ; // 2个停止位
-                }
-                else
-                {
-                    R8_UART_LCR &= ~RB_LCR_STOP_BIT;// 1个停止位
-                }
-
-                // 奇偶校验
-                if( pRsp_t->buad_t.ParityType )
-                {
-                    R8_UART_LCR &= ~RB_LCR_PAR_MOD;
-                    R8_UART_LCR |= ((pRsp_t->buad_t.ParityType-1)&3)<<4;
-                    R8_UART_LCR |= RB_LCR_PAR_EN;
-                }
-                else
-                {
-                    R8_UART_LCR &= ~RB_LCR_PAR_EN;
-                }
-
-                // 数据位
-                R8_UART_LCR &= ~RB_LCR_WORD_SZ;
-                R8_UART_LCR |= (pRsp_t->buad_t.DataBits-5);
-                if( pRsp_t->buad_t.DataBits )
-                {
-
-                }
-
 #if((defined(DTR_RTS_FUNC)) && (DTR_RTS_FUNC == TRUE))
-                rfApplyDtrRts( pRsp_t->buad_t.ioStaus );    /* PA3 <- DTR、PA2 <- RTS */
+                /* 【先排 DTR/RTS，再管线码】两个理由：① 延时从"这一包到达"起算，不会被下面的
+                 * 线码重配（可能要切主频 + 几十毫秒级延时）顶后；② 引脚该有的电平先记下，
+                 * 后面那段万一有什么意外也不影响它。 */
+                rfQueueDtrRts( pRsp_t->buad_t.ioStaus );    /* PA3 <- DTR、PA2 <- RTS（延时见 uart.h） */
 #endif
+                rfApplyLineCode( pRsp_t );      /* 线码真变了才重配（判等在里面；放 Flash 省 RAM） */
             }
             else if( pRsp_t->opcode == OPCODE_DATA )
             {
@@ -618,7 +752,11 @@ static void __attribute__((noinline)) LedStatusQuery( void )
     {
         if( (uint32_t)( now - ledcount ) >= gLedHalfTicks )
         {
-            GPIOA_InverseBits(LED_PIN);
+            /* 用原子 SET/CLR 代替 GPIOA_InverseBits()（那是 R32_PA_OUT ^= pin 的**读改写**）：
+             * 否则它与中断里 DTR/RTS 的 GPIOA_SetBits/ResetBits 撞上时，这里写回的旧值会把
+             * 那一次 DTR/RTS 变化吞掉（表现为"某次断言没生效"）。 */
+            if( R32_PA_OUT & LED_PIN )  GPIOA_ResetBits( LED_PIN );
+            else                        GPIOA_SetBits( LED_PIN );
             ledcount = now;
         }
     }
@@ -667,6 +805,9 @@ void RF_StatusQuery( void )
 
 #if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
     LedStatusQuery( );          /* LED 指示（定义见文件后部，刻意不进 .highcode，省 RAM） */
+#endif
+#if((defined(DTR_RTS_FUNC)) && (DTR_RTS_FUNC == TRUE))
+    rfFlushDtrRts( );           /* DTR/RTS 延时到点才搬引脚（见 uart.h 的 DTR_RTS_RESP_MS） */
 #endif
     if( gTxBuf.status == STA_IDLE )
     {
@@ -1012,6 +1153,9 @@ void RF_UartTxInit( void )
     gTxBuf.status = 0;
     rf_buffer_create(&pRfBuf);
 
+#if((defined(DTR_RTS_FUNC)) && (DTR_RTS_FUNC == TRUE))
+    rfDtrRtsToDefault( );               /* 上电默认：DTR/RTS 都未断言（输出高），并复位内部状态 */
+#endif
     rfBootCountStartup();               /* 【重启 N 次解绑】上电计数/解绑 */
 
     PRINT("gServerData = %x \n",gServerData);
