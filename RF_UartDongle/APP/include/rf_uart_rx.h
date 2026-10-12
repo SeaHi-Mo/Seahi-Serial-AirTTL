@@ -39,7 +39,9 @@ extern "C"
 #define  POLL_INTERVAL_MS   1
 
 void RF_UartRxInit( void );
-uint8_t RF_RxQuery( void *buf, typeBufSize *len );
+/* usb_free=0：USB 侧(EP2)还压着主机没读走的一包 —— 不取上行数据，
+ * 但射频状态机(WAIT->RX 自愈 / 超时断连)照常跑，见 .c 里的说明 */
+uint8_t RF_RxQuery( void *buf, typeBufSize *len, uint8_t usb_free );
 void LedStatusQuery( void );
 void LedTimerInit( void );
 void LedDataPulse( void );

@@ -1933,6 +1933,7 @@ void USB_StatusQuery( void )
 
     typeBufSize len;
     uint8_t i;
+    uint8_t usbFree;        /* EP2 是否空闲（空闲才把上行数据取走并装填） */
 
     i = usb_irq_r_idx;
     if(usb_irq_flag[i])
@@ -1940,34 +1941,39 @@ void USB_StatusQuery( void )
         USB_IRQProcessHandler( );
         usb_irq_flag[i] = 0;
     }
-    /* RF_RxQuery() 必须【无条件】调用：
-     * 它除了"把无线收到的数据交给 USB 上传"，还负责把 gRfStatus 从 WAIT 拉回 RX
-     * 并重启 rf 接收（接收超时 rfProcessTimeout / CRC 错误 rfProcessCrcError
-     * 之后都会停在 WAIT）。若它只在启动时被调用一次，未配对阶段的 RF 接收会
-     * 停摆，主机永远收不到从机的绑定请求 —— 于是永远连不上。
-     * 所以：RF 状态机无条件跑，真正的 USB 上传只在已枚举时做。 */
+    /* RF_RxQuery() 必须【无条件】调用：它除了"把无线收到的数据交给 USB 上传"，还负责把
+     * gRfStatus 从 WAIT 拉回 RX 并重启 rf 接收（接收超时 rfProcessTimeout / CRC 错误
+     * rfProcessCrcError 之后都会停在 WAIT）。未配对阶段若停摆，主机永远收不到从机的
+     * 绑定请求 —— 于是永远连不上。所以：**RF 状态机无条件跑，USB 上传只在已枚举时做**。
+     *
+     * 【本次修的坑】原来这一调用被门控成"只在 EP2 空闲时"才做，于是"WAIT -> RX 自愈"
+     * 也一起被挡掉：映射到 WSL 后如果有人没打开 /dev/ttyUSB0（内核不发 bulk-IN，EP2 就
+     * 一直压着上一包），从机只要上送过一个字节，再来一次 CRC 错误射频就永久停摆 ——
+     * 从机的轮询收不到应答 → 从机 1 秒后判"断开"(LED 快闪) → 3 秒后 dongle 还会
+     * USB_DeInit() 把设备撤掉（/dev/ttyUSB0 凭空消失、usbip attach 失效）。
+     * 现在改成：**数据可以缓、状态机不能停** —— usbFree 只决定"这一圈取不取数据"，
+     * 详见 RF_RxQuery() 的注释。 */
 #if ( USB_WORK_MODE== USB_VENDOR_MODE)
-    if( ( devinf.UsbAddress == 0 ) ||
-        ( (R8_UEP2_CTRL&MASK_UEP_T_RES) == UEP_T_RES_NAK ) )
+    usbFree = ( ( devinf.UsbAddress == 0 ) ||
+                ( (R8_UEP2_CTRL & MASK_UEP_T_RES) == UEP_T_RES_NAK ) ) ? 1 : 0;
+
+    len = MAX_PACKET_SIZE/2;
+    if( RF_RxQuery( &Ep2Buffer[64], &len, usbFree ) )
     {
-        len  = MAX_PACKET_SIZE/2;
-        if( RF_RxQuery( &Ep2Buffer[64], &len ) )
+        if( devinf.UsbAddress == 0 )
         {
-            if( devinf.UsbAddress == 0 )
+            /* USB 尚未枚举：丢弃这批数据，只维持 RF 状态机运转 */
+        }
+        else
+        {
+            if( len > 32 )
             {
-                /* USB 尚未枚举：丢弃这批数据，只维持 RF 状态机运转 */
+                PRINT("!!! error usb in l=%d %x\n",len,R8_UEP2_CTRL);
             }
-            else
-            {
-                if( len > 32 )
-                {
-                    PRINT("!!! error usb in l=%d %x\n",len,R8_UEP2_CTRL);
-                }
-                R8_UEP2_T_LEN = (uint8_t)len;
-                PFIC_DisableIRQ(USB_IRQn);
-                R8_UEP2_CTRL = (R8_UEP2_CTRL & ~MASK_UEP_T_RES) | UEP_T_RES_ACK; //IN_ACK
-                PFIC_EnableIRQ(USB_IRQn);
-            }
+            R8_UEP2_T_LEN = (uint8_t)len;
+            PFIC_DisableIRQ(USB_IRQn);
+            R8_UEP2_CTRL = (R8_UEP2_CTRL & ~MASK_UEP_T_RES) | UEP_T_RES_ACK; //IN_ACK
+            PFIC_EnableIRQ(USB_IRQn);
         }
     }
 #endif

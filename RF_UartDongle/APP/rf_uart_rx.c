@@ -802,27 +802,53 @@ void LedStatusQuery( void )
 /*******************************************************************************
  * @fn      RF_RxQuery
  *
- * @brief
+ * @brief   主循环里唯一的"无线接收侧"入口：取上行数据 + **维持射频状态机**。
  *
- * @return  None.
+ *          ★ 这两件事必须分开看，否则会踩一个很隐蔽的坑：
+ *          · 取数据：只有 USB 侧收得下时才把 RF 环里的数据取走（收不下就留在环里下一圈再试）；
+ *          · 状态机：`WAIT -> RX` 的自愈**必须无条件执行**。`rfProcessTx()` 每次应答完确实会
+ *            重开收包窗口，但 **CRC 错误（rfProcessCrcError）和接收超时（rfProcessTimeout）
+ *            之后 gRfStatus 会停在 WAIT，只有这里能把它拉回 RX**。
+ *            若"USB 侧没读走上一包(EP2 压着数据)"时连这一步也跳过，那么**一次 CRC 错误
+ *            之后射频就永久停摆**：从机的轮询再也收不到应答 → 从机 1 秒后判"断开"(LED 快闪)，
+ *            而 dongle 3 秒去抖后还会 USB_DeInit() 把设备从主机撤掉（WSL 上表现为
+ *            /dev/ttyUSB0 凭空消失、usbip attach 失效，且只能靠重新枚举自愈）。
+ *            典型触发：映射到 WSL 后**没有程序打开 /dev/ttyUSB0**（内核不发 bulk-IN，
+ *            EP2 一直压着），此时从机只要上送过一个字节，就进入上述状态。
+ *
+ * @param   buf       USB 侧上行数据的落点（EP2 缓冲）
+ * @param   *len      入：buf 容量；出：实际长度
+ * @param   usb_free  0 = USB 侧还压着没被读走的一包：**不取数据，但状态机照跑**
+ * @return  实际取到的字节数（usb_free=0 时恒为 0，调用方据此不会去装填 EP2）
  */
 __HIGH_CODE
-uint8_t RF_RxQuery( void *buf, typeBufSize *len )
+uint8_t RF_RxQuery( void *buf, typeBufSize *len, uint8_t usb_free )
 {
-    uint8_t *p;
-
     rfDiagReport( );        /* 诊断汇总（每秒最多一行），只在主循环里做 */
 
     if( gRxDataStatus == DATA_STATUS_RCV )
     {
-        if( read_buf( pRfBuf, buf, len ) == 0 )
+        if( usb_free )
         {
+            if( read_buf( pRfBuf, buf, len ) == 0 )
+            {
 #if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
-            LedDataPulse( );        /* 无线侧收到数据 → LED 亮一下 */
+                LedDataPulse( );        /* 无线侧收到数据 → LED 亮一下 */
 #endif
-            PFIC_DisableIRQ(BLEL_IRQn);
-            gRxDataStatus = DATA_STATUS_START;
-            PFIC_EnableIRQ(BLEL_IRQn);
+                PFIC_DisableIRQ(BLEL_IRQn);
+                gRxDataStatus = DATA_STATUS_START;
+                PFIC_EnableIRQ(BLEL_IRQn);
+            }
+        }
+        else
+        {
+            /* 【数据先不取，但自愈照跑】*len 必须清零，否则调用方会把入参容量当成数据长度 */
+            *len = 0;
+            if( gRfStatus == RF_STATUS_WAIT )
+            {
+                gRfStatus = RF_STATUS_RX;
+                rf_rx_start( gIntervalTimer );
+            }
         }
     }
     else if( gRxDataStatus == DATA_STATUS_TIMEOUT )
