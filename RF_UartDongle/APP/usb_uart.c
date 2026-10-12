@@ -448,6 +448,40 @@ uint8_t CH341RegRead(uint8_t reg_add,uint8_t *reg_val)
   return find_flag;
 }
 
+/*******************************************************************************
+* Function Name  : ch341BpsFromDivisor
+* Description    : 由 CH341/CH340 的分频编码反解波特率（芯片公式，Windows / Linux 驱动通用）
+*
+*   芯片速率公式（Linux ch341 驱动源码里也写着这一条）：
+*       baud = 48000000 / (2^(12 - 3*ps - fact) * div)
+*       0 <= ps <= 3、0 <= fact <= 1、2 <= div <= 256
+*   写分频寄存器时下发的 wIndex（我们收到的）：
+*       wIndex = (0x100 - div) << 8 | fact << 2 | ps
+*       —— 高字节是 div 的补码；低字节 bit0..1 = ps、bit2 = fact；
+*          bit7 是"整包缓冲"标志（与波特率无关，这里不看）。
+*
+*   为什么需要它：下面 0xA1 / 0x9A 两处的分支只覆盖了 **fact = 0** 的 4 档编码
+*   （Windows 驱动常见形态），其余原先一律回退成 115200 —— 只有"请求的正好是 115200"
+*   时才碰巧正确。Linux ch341 驱动会用 fact = 1（低字节 4..7），于是映射到 WSL 时
+*   非 115200 的档位会被静默错配成 115200（上位机看到乱码）。这里按公式解掉。
+*
+* Input          : reg1 -> wIndex 低字节（ps | fact<<2）；reg2 -> wIndex 高字节（div 的补码）
+* Return         : 解出的波特率；编码不合法时回退 115200（宁可回到常见档位，也不要算出 0）
+*******************************************************************************/
+static uint32_t ch341BpsFromDivisor(uint8_t reg1, uint8_t reg2)
+{
+  uint8_t  ps   = reg1 & 0x03;
+  uint8_t  fact = (reg1 >> 2) & 0x01;
+  uint32_t div  = (uint8_t)(0 - reg2);      /* 高字节是 div 的补码 */
+
+  if(div == 0)  div = 256;                  /* (0x100 - 256) = 0，正是 div=256 的写法 */
+  if(div < 2)   return 115200;              /* 不合法编码：给个安全值 */
+
+  /* 2^(12 - 3*ps - fact)：ps<=3、fact<=1 → 指数恒在 2..12，右移不会越界 */
+  return (48000000u >> (12 - 3 * ps - fact)) / div;
+}
+
+
 /* endpoints enumeration */
 #define ENDP0                           0x00
 #define ENDP1                           0x01
@@ -830,7 +864,10 @@ void USB_IRQProcessHandler( void )   /* USB中断服务程序 */
                       }
                       else
                       {
-                        bps = 115200;
+                        /* 【通用解码】原先这里固定回退 115200：只对"Windows 驱动恰好也这么编码"的档位
+                         * 碰巧正确；Linux ch341 驱动会用 fact=1（低字节 4..7），那样就会把波特率静默
+                         * 设成 115200（映射到 WSL 时表现为非 115200 档位乱码）→ 改走芯片公式。 */
+                        bps = ch341BpsFromDivisor( UsbSetupBuf->wIndexL, UsbSetupBuf->wIndexH );
                       }
                     }
                     Uart0Para.BaudRate = bps;
@@ -1005,7 +1042,10 @@ void USB_IRQProcessHandler( void )   /* USB中断服务程序 */
                         }
                         else
                         {
-                          bps = 115200;
+                          /* 【通用解码】原先这里固定回退 115200：只对"Windows 驱动恰好也这么编码"的档位
+                           * 碰巧正确；Linux ch341 驱动会用 fact=1（低字节 4..7），那样就会把波特率静默
+                           * 设成 115200（映射到 WSL 时表现为非 115200 档位乱码）→ 改走芯片公式。 */
+                          bps = ch341BpsFromDivisor( uart_reg1_val, uart_reg2_val );
                         }
                       }
                       Uart0Para.BaudRate = bps;
