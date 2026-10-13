@@ -104,8 +104,8 @@ PC  ⇄  主机 RF_UartDongle  ⇄  2.4G  ⇄  从机 RF_Uart  ⇄  被调试设
 </td>
 <td width="2%"></td>
 <td width="49%" valign="top" bgcolor="#f6f8fa" style="border:1px solid #d0d7de;border-radius:10px;padding:14px 16px">
-<b>📶 从机自适应主频</b><br>
-波特率落在 <b>400 kbps ~ 1 Mbps</b> 时，从机自动把系统时钟切到 <b>100 MHz</b>，否则用 24 MHz —— 兼顾高速与功耗。<br>🚧 <b>波特率上限 1.5 Mbps</b>：从机串口是<b>整数分频</b>（<code>DL = round(Fsys/8/baud)</code>），格点离散 —— 请求 2 Mbps 只能生成 1.5 Mbps（差 25%）→ 与目标设备必然对不上，所以固件把上限直接夹在 <b>1.5 Mbps</b>。
+<b>📶 从机按档挑主频</b><br>
+从机按<b>波特率查表</b>挑系统时钟（256000 → 100 MHz、576000 / 921600 → 60 MHz、400 kbps ~ 1 Mbps → 100 MHz，其余 24 MHz）—— 从机串口是<b>整数分频</b>，同一个请求值换个主频就换个误差，<b>921600 的偏差由此从 −3.12% 降到 +1.72%</b>。<br>🚧 <b>波特率上限 1.5 Mbps</b>：格点离散 —— 请求 2 Mbps 只能生成 1.5 Mbps（差 25%）→ 与目标设备必然对不上，所以固件把上限直接夹在 <b>1.5 Mbps</b>。
 </td>
 </tr>
 <tr><td colspan="3" height="10"></td></tr>
