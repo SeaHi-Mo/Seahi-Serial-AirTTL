@@ -294,10 +294,26 @@ static void rf_bound( bound_rsp_t *rsp )
     rf_rx_set_sync_word( rsp->accessaddr );
     rf_rx_set_frequency( rsp->channel );
     rf_rx_set_phy_type( rsp->phy );
-    RF_bound_Flag = 1;
     gLastDataRspLen = 0;        /* 新绑定：gDataSeq 归零，旧缓存作废 */
-    PRINT("bound success.%X %x\n",rsp->accessaddr,rsp->channel );
-    /* 建链成功才持久化：此时采用的 serverData 与从机保存的必然一致 */
+    PRINT("bound rsp sent.%X %x\n",rsp->accessaddr,rsp->channel );
+    /* 【这里**不**置 RF_bound_Flag、**不**落盘】把 BOUND_RSP 发出去只是"单向假定"：
+     * 从机可能没收到（空口丢包 / 它还在旧参数上重试）。主机若就此自认已连上，就会
+     * "LED 熄灭 + 枚举 USB + 守着新参数等"，而从机还在旧参数上广播 —— 直到主机超时断开，
+     * 表现就是"灯说连上了，数据却一直不通"。所以"已连接"改由 rfBoundConfirm() 在
+     * **收到从机在新参数上的第一包**时认定。*/
+}
+
+/* 【真正建链成功的判定】在新参数上收到从机的第一包 = 链路确实双向通了 —— 此刻才做两件事：
+ *   ① 置 RF_bound_Flag：LED 由快闪转为熄灭（LedStatusQuery 的 gLinkStable 去抖也基于它，
+ *      USB 枚举同理）→ 从此"熄灭"才真的等于"连上了"；
+ *   ② 落盘 serverData：此时存下的必然是**从机真正采纳**的那一份（配对阶段从机会反复广播，
+ *      早落盘会存成"主机最后一次生成、从机却没采纳"的值 → 两边不一致、永久 reject）。
+ * 若那包 BOUND_RSP 丢了：从机不会用新参数发包 → 本函数不会被调用 → 主机超时走
+ * rf_disconnect()，LED 回到快闪并重新配对 —— 这正是应有的表现。*/
+static void rfBoundConfirm( void )
+{
+    RF_bound_Flag = 1;
+    PRINT("bound success (link up).\n" );
     rfSaveServerData( );
 }
 
@@ -405,6 +421,12 @@ static void rfProcessRx( rfPackage_t *pPkt )
     }
     else
     {
+        /* 【收到新参数上的第一包 = 真连上了】见 rfBoundConfirm() 的说明 */
+        if( !RF_bound_Flag )
+        {
+            rfBoundConfirm( );
+        }
+
         rfRsp_t *pRsp_t = (rfRsp_t *)&gTxBuf.TxBuf[PKT_HEAD_LEN];
         if( pPkt->type == PKT_CMD_GET_STATUS )
         {

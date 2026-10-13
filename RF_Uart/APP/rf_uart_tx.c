@@ -117,6 +117,8 @@ static volatile uint32_t gIoTickPending;    /* вН╨Ср╩╢ноб╥╒╣дй╠©лё╗SysTick ╪фйЩё
 static volatile uint8_t  gHostRts;          /* жВ╩З RTS ╣дбъ╪╜╣Гф╫ё╨1 = н╢╤оятё╗д╛хо╦ъё╘ */
 static volatile uint8_t  gRtsHoldActive;    /* уЩтзеэ"жВ╩Зйм╥е╨С╠ёЁж╣м"╣д╢╟©з */
 static volatile uint32_t gRtsHoldTick;      /* ╦ц╢╟©з╣дфП╣Цё╗SysTick ╪фйЩё╘ */
+static volatile uint32_t gRtsHoldTicks;     /* ╦ц╢╟©зр╙╤ЮЁ╓ё╗tickё╘║╙║╙йм╥ей╠╟╢ RTS_MIN_LOW_MS кЦЁЖю╢ */
+static volatile uint32_t gRtsLowTick;       /* RTS ╤оятё╗PA2 ╠╩ю╜╣мё╘╣дй╠©лё╛сцю╢а©ря╣мак╤Ю╬ц */
 
 /* а╫╫е╩ь╣╫д╛хоё╗н╢╤оят = йДЁЖ╦ъё╘ё╛╡╒╤╙╣Т╣х╢Щжп╣д IO в╢л╛║ё
  * ио╣ГсК╤оа╢й╠╣Всцё╨╤оа╢╡╩╟яд©╠Йр╩ж╠╟╢тз╦╢н╩ио║ё */
@@ -125,6 +127,7 @@ static void __attribute__((noinline)) rfDtrRtsToDefault( void )
     GPIOA_SetBits( DTR_PIN | RTS_PIN );
     gHostRts       = 1;
     gRtsHoldActive = 0;
+    gRtsHoldTicks  = LedMsToTicks( RTS_RELEASE_HOLD_MS );
     gIoPending     = 0;
 }
 
@@ -143,7 +146,7 @@ static void __attribute__((noinline)) rfFlushDtrRts( void )
 
     /* ╒ы жВ╩Зряйм╥е RTSё╨╠ёЁж╣мбЗ RTS_RELEASE_HOLD_MS ╡е╩ьд╛хо╦ъё╗ж╩╤╞ PA2ё╛╡╩еЖ DTRё╘ */
     if( gRtsHoldActive
-     && (uint32_t)( SysTick->CNT - gRtsHoldTick ) >= LedMsToTicks( RTS_RELEASE_HOLD_MS ) )
+     && (uint32_t)( SysTick->CNT - gRtsHoldTick ) >= gRtsHoldTicks )
     {
         gRtsHoldActive = 0;
         GPIOA_SetBits( RTS_PIN );
@@ -179,13 +182,26 @@ static void __attribute__((noinline)) rfFlushDtrRts( void )
     {
         gHostRts       = 0;
         gRtsHoldActive = 0;                 /* сж╟╢обакё╨х║оШ╢Щ╩ж╦╢ё╛╪лпЬя╧в║ */
+        gRtsLowTick    = SysTick->CNT;      /* ╪гоб╤оятй╠©лё╨RTS_MIN_LOW_MS ╢суБюОкЦфП */
         GPIOA_ResetBits( RTS_PIN );
     }
     else if( !gHostRts )                    /* 0 -> 1 йм╥еяьё╨фП╢╟©зё╛рЩ╫еох╠ёЁж╣м */
     {
+        uint32_t lowed = (uint32_t)( SysTick->CNT - gRtsLowTick );   /* ря╬╜╣мак╤Ю╬цё╗tickё╘ */
+
         gHostRts       = 1;
         gRtsHoldActive = 1;
         gRtsHoldTick   = SysTick->CNT;
+        /* йм╥е╨Сжаиыты╠ёЁж RTS_RELEASE_HOLD_MSё╩хТ RTS_MIN_LOW_MS ╩╧ц╩╣╫ё╛╬м╡╧вЦ╡Н╤Н║ё
+         * ион╩╩З╦Ь╣дбЖЁЕ╠х RTS_MIN_LOW_MS ╩╧©Мё╗lowed ря╧╩ё╘й╠ё╛ппн╙сКюо╟Фр╩жб║ё */
+        gRtsHoldTicks  = LedMsToTicks( RTS_RELEASE_HOLD_MS );
+        {
+            uint32_t need = LedMsToTicks( RTS_MIN_LOW_MS );
+            if( lowed < need && ( need - lowed ) > gRtsHoldTicks )
+            {
+                gRtsHoldTicks = need - lowed;
+            }
+        }
     }
     else if( !gRtsHoldActive )              /* тГ╬мйм╥е║╒╢╟©зр╡╧Щакё╨х╥хойгд╛хо╦ъ */
     {
