@@ -495,14 +495,17 @@ static void rfProcessRx( rfPackage_t *pPkt )
         if( pPkt->type == PKT_DATA_RSP_ACK )
         {
             // 数据发送成功
-#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
-            /* 下行数据有两条捎带路径（本包 / PKT_CMD_RSP_STATUS），这里补上本包这一条，
-             * 否则"数据收到了但灯不闪" —— 因为主机看从机当时在发什么来选择捎带路径 */
-            LedDataPulse( );
-#endif
             if( pPkt->length > PKT_DATA_OFFSET+1 )
             {
                 typeBufSize len;
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+                /* 【只有真带下行数据才闪】下行数据有两条捎带路径（本包 / PKT_CMD_RSP_STATUS），
+                 * 这里补上"本包"这一条。但**不能无条件闪**：主机对上次上行数据的**纯 ACK**
+                 * 也是这个类型（`length == PKT_DATA_OFFSET`），而且它在重传时会被原样重发 ——
+                 * 无条件闪就会出现"没有任何数据在传、LED 却偶尔闪一下"的假象（实测反馈）。
+                 * 上行数据那一侧由发包处（`s == 0` 分支）闪，两条真数据路径都还在，语义不变。 */
+                LedDataPulse( );
+#endif
 
                 pPkt_t = pPkt;
                 {
