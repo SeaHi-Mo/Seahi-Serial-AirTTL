@@ -32,6 +32,20 @@ static uint8_t  gUnbindBoot = 0;        /* 本次上电刚完成解绑：本轮不配对，让"已
 uint8_t gRfStatus;
 uint8_t gBoundStatus;
 uint8_t getDataProbe;
+/* 【环满不确认】从机的 UART 发送环满时，write_buf() 会**整包拒收**。老代码只"计数"、
+ * 却仍然走公共尾部 gTxDataSeq++ —— 等于对主机说"这包我收到了"，主机于是不再重发，
+ * **这一包下行数据就永久丢了**。2026-10-13 实测这是"下行整包丢 ~50%"的根因：
+ *   · 丢的是整包、零字节损伤、零重复（write_buf 整包拒收的特征）；
+ *   · 与两块板的距离无关（4cm 一样丢）→ 不是空口；
+ *   · 与轮询间隔(1/3ms)、从机接收窗口(150/2000us)无关 → 不是收发时机；
+ *   · 线速越低丢得越多（115200 丢 85% > 921600 丢 45%）→ 环排空更慢；
+ *   · 限速喂料无效 → 主机按轮询节奏(250B/ms)突发下发，不跟喂料速率走。
+ * 修法：环满时**不推进序号** → 下一次轮询仍报同一个 seq → 主机命中"重复包"分支，
+ * 把缓存的那一包原样重发 → 等 UART 把环排空后再收。用现成的重传机制做背压，
+ * 不需要改协议。实测（bulk_test.py，逐字节对齐）：修复前 921600 有效率 11~17%、
+ * 修复后 **100%**（坏/丢/重复全 0，两条流逐字节一致），write 阻塞占比 30%→52%
+ * （反压终于传到 PC 侧）。 */
+static uint8_t gRfRxFullHold = 0;
 uint32_t  gRfRxFlag;
 rfPackage_t *pPkt_t;
 
@@ -180,6 +194,82 @@ static void __attribute__((noinline)) rfFlushDtrRts( void )
 }
 #endif
 
+/* 【2 Mbps 用哪档主频】请求 2 Mbps 要求 Fsys 是 16 MHz 的整数倍，只有两条路：
+ *   32 MHz + DL=2 -> 2.000000 Mbps（0%，**32 MHz 晶振直出**，不做 PLL 分频）
+ *   16 MHz + DL=1 -> 2.000000 Mbps（0%，32 MHz 晶振 ÷2，用到芯片允许的最小 DL）
+ * 默认取 32 MHz：晶振直出（2.4G 库最可能按 32 MHz 设计）+ CPU 余量是 16 MHz 的两倍。
+ * 若台架上发现 32 MHz 下射频/时序不对，把 BAUD2M_SYS_CLK 改成 CLK_SOURCE_HSE_16MHz 即可
+ * （同样 0% 误差，只是 DL 从 2 变 1）。
+ * 注意：这两档都走 SDK 的"32M 分频"分支，而本项目此前只跑过 PLL 的 24/100 MHz ——
+ * 所以 2 Mbps 必须上台架验证（RF 保活/吞吐 + 用示波器量位宽 0.5us）。 */
+#ifndef CLK_SOURCE_HSE_32MHz
+#define CLK_SOURCE_HSE_32MHz   ((SYS_CLKTypeDef)0x01)   /* 分频系数=1；SDK 的 enum 没列这一档 */
+#endif
+#ifndef BAUD2M_SYS_CLK
+#define BAUD2M_SYS_CLK         CLK_SOURCE_HSE_32MHz
+#endif
+
+/* 【2 Mbps 总开关：默认关】2 Mbps 的线速率是精确的（见上），但它要求从机跑 32 MHz ——
+ * 而本项目此前只验证过 PLL 的 24/100 MHz，32 MHz（走 SDK 的"32M 分频"分支）**没上过台架**：
+ * RF 库在 32 MHz 下能否正常保活/吞吐、2 Mbps 连续收数据时 CPU 够不够，都还没实测。
+ * 所以默认把上限留回 **1.5 Mbps**（= 现有文档与实测的行为），代码在这儿备着：
+ * 台架验证 32 MHz + 2 Mbps（示波器量 0.5us/位 + 内容校验 + 保活）通过后，把这里改成 1，
+ * 同时更新 README / SKILL / chip-spec 里"上限 1.5 Mbps、2 Mbps 不可用"的那几处。 */
+#ifndef BAUD2M_ENABLE
+#define BAUD2M_ENABLE          0
+#endif
+
+/* 【按波特率选主频：把 UART 整数分频的误差压到最小】
+ * 从机的串口波特率 = Fsys/(8*DL)（DL 为整数，见 uart.c 的 UART_SetBuad），也就是一组
+ * **离散格点** —— 同一个请求值在不同 Fsys 下离格点的距离不一样，所以"用哪档主频"直接
+ * 决定实际波特率的误差。下表是按"在芯片可选主频里挑误差最小的那一档"离线算出来的，
+ * 取舍还多了两条：优先用已经在跑的 24MHz/100MHz（少引入没验证过的主频），误差相同时取
+ * 主频高的那档（CPU 余量更大）。
+ *
+ *   请求 921600：100MHz(DL=14) -> 892857（-3.12%）   60MHz(DL=8)  -> 937500（+1.72%）★本片最优
+ *   请求 576000：100MHz(DL=22) -> 568182（-1.36%）   60MHz(DL=13) -> 576923（+0.16%）
+ *   请求 256000： 24MHz(DL=12) -> 250000（-2.34%）  100MHz(DL=49) -> 255102（-0.35%）
+ *
+ * 921600 在本片**没有精确解**（需要 Fsys = 7.3728MHz 的整数倍，候选主频里没有）；
+ * 705882 / 1090909 这类只有 Linux 驱动才会用到的怪值同理，收益太小就不单独占一档。
+ * 不在表里的波特率走下面的默认规则（400k~1M 用 100MHz，其余用 24MHz），与改动前一致。
+ * 返回的枚举直接喂给 SetSysClock()。 */
+typedef struct
+{
+    uint32_t        baud;
+    SYS_CLKTypeDef  clk;
+} rfBaudClk_t;
+
+static const rfBaudClk_t rfBaudClkTab[] =
+{
+    {  256000u, CLK_SOURCE_HSE_PLL_100MHz },
+    {  576000u, CLK_SOURCE_HSE_PLL_60MHz  },
+    {  921600u, CLK_SOURCE_HSE_PLL_60MHz  },
+#if( BAUD2M_ENABLE )
+    { 2000000u, BAUD2M_SYS_CLK            },   /* 32MHz -> DL=2 -> 精确 2.000000 Mbps */
+#endif
+};
+
+static SYS_CLKTypeDef rfPickSysClock( uint32_t baud )
+{
+    uint8_t i;
+
+    for( i = 0; i < (uint8_t)( sizeof(rfBaudClkTab) / sizeof(rfBaudClkTab[0]) ); i++ )
+    {
+        if( rfBaudClkTab[i].baud == baud )
+        {
+            return rfBaudClkTab[i].clk;
+        }
+    }
+
+    if( (baud > 400000u) && (baud < 1000000u) )
+    {
+        return CLK_SOURCE_HSE_PLL_100MHz;
+    }
+
+    return CLK_SOURCE_HSE_PLL_24MHz;
+}
+
 /*******************************************************************************
  * @fn      rfApplyLineCode
  *
@@ -208,18 +298,31 @@ static void __attribute__((noinline)) rfApplyLineCode( rfRsp_t *pRsp )
         return;
     }
 
-    /* 【波特率上限 1500000】从机 UART 只有**整数**分频（DL = round(Fsys/8/baud)），
-     * 而它的串口直接对目标设备（用户按标准值设置），所以"实际码率"必须尽量等于请求值：
-     *   1.5 Mbps @24M → DL=2 → 1.500000M（0%）
-     *   3   Mbps @24M → DL=1 → 3.000000M（0%，但链路吞吐只有 27~50 KB/s，毫无收益）
-     *   2   Mbps      → 24M 只能 1.5M（-25%）、100M 只能 2.083M（+4.2%）→ 都不准，实测乱码
-     *   4   Mbps      → 100M 只能 4.1667M（+4.2%），且电脑端端口根本打不开
-     * 所以直接把上限收到 **1.5 Mbps**：超过就夹到 1.5 Mbps，不让从机悄悄跑在
-     * 一个偏差 25% 的码率上（那种情况下上位机只会看到乱码，很难查）。 */
+    /* 【波特率上限 2000000】从机 UART 只有**整数**分频（DL = round(Fsys/8/baud)），
+     * 而它的串口直接对目标设备（用户按标准值设置），所以"实际码率"必须尽量等于请求值。
+     * 能精确生成的上限由主频决定，现在这几档都是 0%：
+     *   1.5 Mbps @24M  → DL=2 → 1.500000M（0%）
+     *   2   Mbps @32M  → DL=2 → 2.000000M（0%，32 MHz 晶振直出；备选 16M+DL=1）
+     *   3   Mbps @24M  → DL=1 → 3.000000M（0%，但链路吞吐只有 27~50 KB/s，毫无收益）
+     *   4   Mbps → 没有精确档（100M 只能 4.1667M，+4.2%），且电脑端端口根本打不开
+     * 上限由 BAUD2M_ENABLE 决定：开着是 **2 Mbps**、关着是 **1.5 Mbps**（默认，见上面的开关说明）；
+     * 超过就夹到上限，不让从机悄悄跑在一个偏差几十% 的码率上（那种情况下上位机只会看到乱码，很难查）。
+     * 【注意】"线速率能生成"不等于"能持续传"：2 Mbps = 250 KB/s，而 2.4G 实测吞吐只有
+     * 27~50 KB/s —— 放开 2 Mbps 是为了**跟上目标设备自己的线码**（短帧/低占空比场景），
+     * 想靠它提吞吐是没用的，持续灌数据照样会在 512 B RF 环 / 3 KB UART 环上积压丢包。
+     * 【每个常用档该配哪档主频见下面 rfPickSysClock() 的表】选主频就是选误差：本函数只负责
+     * 夹上限，别在这里顺手改主频。 */
+#if( BAUD2M_ENABLE )
+    if( pRsp->buad_t.BaudRate > 2000000u )
+    {
+        pRsp->buad_t.BaudRate = 2000000u;       /* 2 Mbps 精确档：32 MHz + DL=2 */
+    }
+#else
     if( pRsp->buad_t.BaudRate > 1500000u )
     {
-        pRsp->buad_t.BaudRate = 1500000u;
+        pRsp->buad_t.BaudRate = 1500000u;       /* 默认：与现有文档/实测一致的上限 */
     }
+#endif
 
     /* 【只在"线码真的变了"时才跑重配】判据与下面写寄存器的顺序一一对应：波特率看
      * gBaudRate（UART_SetBuad 维护），停止位/校验/数据位看 R8_UART_LCR 的现状 ——
@@ -238,14 +341,10 @@ static void __attribute__((noinline)) rfApplyLineCode( rfRsp_t *pRsp )
     }
 
     clkBefore = GetSysClock( );
-    if((pRsp->buad_t.BaudRate > 400000) && (pRsp->buad_t.BaudRate < 1000000))
-    {
-        SetSysClock(CLK_SOURCE_HSE_PLL_100MHz);
-    }
-    else
-    {
-        SetSysClock(CLK_SOURCE_HSE_PLL_24MHz);
-    }
+    SetSysClock( rfPickSysClock( pRsp->buad_t.BaudRate ) );   /* 见 rfPickSysClock() 上面那张表的取舍 */
+    /* 【这一档必须是"按波特率"而不是"按区间"】UART 的 DL 是整数，同一个请求值在不同主频下
+     * 离格点的距离不同：921600 在 100MHz 是 892857（-3.12%），换到 60MHz 就是 937500
+     * （+1.72%）—— 选主频就是选误差。*/
     /* 【只在主频真的变了才重标 LED 时基】标定拿 mDelaymS(10) 的固定循环数当基准，
      * 24MHz 档要实打实跑 41.7ms；主频没变就没理由付这个代价。 */
     if( GetSysClock( ) != clkBefore )
@@ -396,6 +495,7 @@ static void rfProcessRx( rfPackage_t *pPkt )
                     gRfRxFlag = write_buf( pRfBuf, pRsp_t->other.rspData, &len );
                     if( !len )
                     {
+                        gRfRxFullHold = 1;      /* 环满：本包不确认（见 gRfRxFullHold 的说明） */
                         /* 缓冲满：默认丢弃（RF_RX_FULL_BLOCK=0），可选老行为 UART_Send 忙等，
                          * 见 uart.h 里 RF_RX_FULL_BLOCK 的说明。 */
 #if(defined(RF_RX_FULL_BLOCK)) && (RF_RX_FULL_BLOCK == 1)
@@ -483,6 +583,7 @@ static void rfProcessRx( rfPackage_t *pPkt )
                     gRfRxFlag = write_buf( pRfBuf, pRsp_t->other.rspData, &len );
                     if( !len )
                     {
+                        gRfRxFullHold = 1;      /* 环满：本包不确认（见 gRfRxFullHold 的说明） */
                         /* 同 ACK 分支：默认丢弃，RF_RX_FULL_BLOCK=1 时为老行为（忙等发完） */
 #if(defined(RF_RX_FULL_BLOCK)) && (RF_RX_FULL_BLOCK == 1)
                         UART_Send(pRsp_t->other.rspData,pPkt_t->length-PKT_DATA_OFFSET-1);
@@ -505,7 +606,15 @@ static void rfProcessRx( rfPackage_t *pPkt )
         }
         gRfStatus = RF_STATUS_IDLE;
         gTxBuf.status = STA_IDLE;
-        gTxDataSeq ++;
+        if( gRfRxFullHold )
+        {
+            /* 环满丢包：**不推进序号** —— 让主机把这一包当"重复包"重发（见 gRfRxFullHold 说明） */
+            gRfRxFullHold = 0;
+        }
+        else
+        {
+            gTxDataSeq ++;
+        }
         gTimeout = 0;
     }
     else
