@@ -76,24 +76,28 @@
 若静置时还会闪，说明确实有东西在发（目标定时上报 / 噪声），或空口在丢包重传 ——
 按本文档上面那条"三种来源"表（PC 口有没有字节 / 主机调试口 `ulost` 与 `crc` 是否在涨）区分。
 
-### 4. 经 AirTTL 烧/用 Ai-WB2（博流 BL602）SDK 工程：波特率必须落在支持档位
+### 4. 经 AirTTL 用 Ai-WB2（博流 BL602）SDK 工程：**运行输出**的波特率也要 <= 1.5 Mbps
 
-**现象**：SDK 的 `applications/get-started/helloworld` 用 `make flash` 烧录，桥这边
-`shake hand success` 之后在**载入 helper** 时失败（`4080/37184` -> 读到不认识的回应 ->
-`BFLB LOAD HELP BIN FAIL`）；而**同一套工具、同一块桥**烧 `AiPi-Clock-Mini` 是成功的。
+**这不是烧录失败的原因，别混淆**（我第一版写错过，2026-10-14 更正）。
 
-**根因（已实测确认）**：**波特率档位**。SDK 的 helloworld 默认
-`CONFIG_UART_OTA_FAST_BAUD := 2000000`，而**从机对 2 Mbps 只能生成 1.5 Mbps**（整数分频，差 −25%，
-见 README「波特率上限 1.5 Mbps」）-> 必然对不上。**改成 921600 后 `make flash` 正常**。
-对照：成功的 `AiPi-Clock-Mini/proj_config.mk` 里就是 `CONFIG_UART_OTA_FAST_BAUD := 921600`
-（其注释写着「两端唯一的速率旋钮：组件启动即把控制台切到它」）。
+**现象**：SDK 的 `applications/get-started/helloworld` 默认 `CONFIG_UART_OTA_FAST_BAUD := 2000000`
+（该组件**启动即把控制台切到这个速率**）。而从机对 2 Mbps 只能生成 **1.5 Mbps**（整数分频，差 −25%，
+见 README「波特率上限 1.5 Mbps」）-> 于是**应用跑起来以后，PC 端串口看到的就是乱码**。
+把它改成 **921600**（= 成功的 `AiPi-Clock-Mini` 的取值）后，打印才正常可读。
 
-**检查清单**（经本桥接 Ai-WB2 SDK 工程时逐条对）：
-1. **应用侧**：`CONFIG_UART_OTA_FAST_BAUD`（或工程里其它「启动即切控制台」的旋钮）**必须 <= 1500000**，推荐 **921600**；
-2. **烧录侧**：`make flash b=<波特率>` 也要 <= 1500000（921600 / 460800 是甜点；115200 会把 37 KB helper 拖很久）；
-3. **两侧要一致**：应用把控制台切到某个速率后，PC 端串口工具也要用同一个速率，否则看到的就是乱码
-   （这正是「烧完 hello world 看不到打印」的常见原因）；
-4. 与本桥固件无关 —— 从机只是**忠实夹到 1.5 Mbps**，不会替上位机猜。
+**要点**：
+1. 应用侧「启动即切控制台」的旋钮（如 `CONFIG_UART_OTA_FAST_BAUD`）必须 **<= 1500000**，推荐 **921600**；
+2. 改完之后 PC 端串口工具也要用同一个速率，否则一样是乱码；
+3. 与本桥固件无关 —— 从机只是**忠实夹到 1.5 Mbps**。
+
+**仍然未解决（与本条无关）**：helloworld 用 `make flash` 走本桥**烧录仍然失败** ——
+桥侧 `shake hand success` 之后在**载入 helper**（`eflash_loader_40m.bin`，37184 B）时出错：
+进度到 `4080/37184` 就报不认识回应、`BFLB LOAD HELP BIN FAIL`。
+已知对照：**同一套工具、同一块桥烧 `AiPi-Clock-Mini` 成功**。
+待查方向（按优先级）：① 成功那次用的**速率**（有一份 Clock-Mini 尝试的日志显示 `com speed: 115200`，
+而失败的 helloworld 用的是 921600）-> 先试 `make flash b=115200`；
+② 两个工程用的**烧录工具版本**是否不同（Clock-Mini 的 `flash.sh` 用的是它自带 `sdk/` 里那套）；
+③ 从机 0x7F 一键下载是否在 ISP 会话中途抢了 BOOT/RESET（诊断件 `RF_Uart-noSTISP.hex`）。
 
 ## 二、已经发布的部分（对照用）
 
