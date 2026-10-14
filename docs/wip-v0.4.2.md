@@ -8,7 +8,7 @@
 
 | # | 板 | 文件 | 行为变化 | 资源 | 桌面固件 MD5 |
 |---|---|---|---|---|---|
-| 1 | 从机 | `RF_Uart/APP/include/uart.h`（`RTS_PULSE_DELAY_MS 500` / `RTS_PULSE_LOW_MS 200`）、`RF_Uart/APP/rf_uart_tx.c`（`rfFlushDtrRts()` 复位脉冲状态机） | **RTS 断言沿生成固定复位脉冲**：先等 500 ms（此间 PA2 保持高）→ 再压低 200 ms → 回高；与上位机按多久无关。两值都置 0 = 恢复纯跟随 | FLASH 12772 B（5.20%）、RAM 11492 B（93.52%） | `166d3902ee5acd8f82c578dc045f8c50`（含改动 1+3） |
+| 1 | 从机 | `RF_Uart/APP/include/uart.h`（`RTS_PULSE_DELAY_MS 500` / `RTS_PULSE_LOW_MS 200`）、`RF_Uart/APP/rf_uart_tx.c`（`rfFlushDtrRts()` 复位脉冲状态机） | **RTS 断言沿生成复位**：先等 500 ms（此间 PA2 保持高）→ 再压低；**上位机仍按着就一直保持低**，早释放则低满 200 ms 回高。两值都置 0 = 恢复纯跟随 | FLASH 12772 B（5.20%）、RAM 11492 B（93.52%） | `166d3902ee5acd8f82c578dc045f8c50`（含改动 1+3） |
 | 2 | 主机 | `RF_UartDongle/APP/rf_uart_rx.c`（`rf_bound()` / 新增 `rfBoundConfirm()` / `rfProcessRx()` 已绑定分支入口） | **"已连接"改由"在新参数上收到从机第一包"认定**（不再在 BOUND_RSP 发完那一刻单向假定）：LED 熄灭、USB 枚举、`serverData` 落盘都挪到那时 | FLASH 21772 B（8.86%）、RAM 10272 B（83.59%） | `506c865aebd3ba76979645f0dada0d61` |
 | 3 | 从机 | `RF_Uart/APP/rf_uart_tx.c`（`PKT_DATA_RSP_ACK` 分支） | **空 ACK / 保活包不再驱动 LED**：`LedDataPulse()` 移进"确实带下行数据"的判断里 | 与改动 1 同一份固件 | `166d3902ee5acd8f82c578dc045f8c50` |
 
@@ -24,8 +24,13 @@
 从机不再"跟随"上位机的脉宽，而是在 **RTS 断言沿**启动一次固定序列：
 
 ```
-断言沿 --[先等 RTS_PULSE_DELAY_MS = 500ms，此间 PA2 保持高]--> 压低 PA2 --[低 RTS_PULSE_LOW_MS = 200ms]--> 回高
+断言沿 --[先等 RTS_PULSE_DELAY_MS = 500ms，此间 PA2 保持高]--> 压低 PA2
+     |-- 上位机仍按着 RTS ------> 一直保持低，等释放后低满 RTS_PULSE_LOW_MS = 200ms 才回高
+     |-- 上位机已释放 RTS ------> 低满 200ms 回高（固定脉冲）
 ```
+（2026-10-14 补：此前只做"固定脉冲"，Ai-WB2-SDK 的 hello world 烧录出现"无法识别复位"——
+上位机按"先按住 RESET，再操作，最后释放"的流程时，固定脉冲跑完就回高，工具再也看不到它期待的复位。
+故补上"按住即保持低"这一支，两条流程都兼容。）
 
 前 500 ms 延迟是留给上位机把 **BOOT0（DTR/PA3）** 等线摆好、并开始发同步字节（工具通常是
 "先设 BOOT、再拉 RESET、然后发同步"）；脉冲形状与上位机按多久完全解耦。两个值都置 0 可恢复
