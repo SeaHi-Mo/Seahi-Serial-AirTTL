@@ -96,9 +96,10 @@ static void rf_buffer_create(struct simple_buf **buf)
 /* ===================== ¡¾DTR/RTS ÉúĞ§¹æÔò¡¿ =====================
  * DTR£¨PA3 -> Ä¿±ê BOOT0£©Óë RTS£¨PA2 -> Ä¿±ê RESET£©**¹ÊÒâ²»Í¬**£º
  *   ¡¤ DTR£º´¿¸úËæÖ÷»ú ¡ª¡ª ¶ÏÑÔÀ­µÍ¡¢ÊÍ·ÅÀ­¸ß£¬²»×Ô¶¯»Ö¸´£¨½ø Bootloader ÒªÄÜ°Ñ BOOT0 °´×¡£©£»
- *   ¡¤ RTS£º¶ÏÑÔÀ­µÍ£»Ö÷»ú**ÊÍ·Åºó»¹Òª±£³ÖµÍ RTS_RELEASE_HOLD_MS£¨Ä¬ÈÏ 30ms£©**²Å»Øµ½Ä¬ÈÏ¸ß£¬
- *          ±£Ö¤Ä¿±ê³Ôµ½×ã¹»¿íµÄ¸´Î»µÍµçÆ½¡£
- *          µÍµçÆ½¿í¶È = Ö÷»ú°´×¡µÄÊ±³¤ + ²É¼¯ÑÓÊ±(DTR_RTS_RESP_MS) + RTS_RELEASE_HOLD_MS¡£
+ *   ¡¤ RTS£º**¶ÏÑÔÑØ´¥·¢Ò»´Î¹Ì¶¨ĞÎ×´µÄ¸´Î»Âö³å** ¡ª¡ª ÏÈµÈ RTS_PULSE_DELAY_MS£¨Ä¬ÈÏ 500ms£¬
+ *          ´Ë¼ä PA2 ±£³Ö¸ß¡¢²»¸´Î»£©£¬ÔÙÑ¹µÍ RTS_PULSE_LOW_MS£¨Ä¬ÈÏ 200ms£©£¬È»ºó»Ø¸ß¡£
+ *          ÓëÉÏÎ»»ú°Ñ RTS °´×¡¶à¾Ã**ÎŞ¹Ø**£¨ÌáÇ°ÊÍ·ÅÒ²²»Ó°Ïì£¬ÈÔÔÚ¶ÏÑÔÑØÆğËã£©¡ª¡ª
+ *          Ïê¼û uart.h Àï RTS_PULSE_* µÄËµÃ÷£¨º¬ÎªÊ²Ã´ÕâÃ´Éè¼Æ£©¡£
  * Á½½ÅµÄÄ¬ÈÏµçÆ½¶¼ÊÇ"Î´¶ÏÑÔ = Êä³ö¸ß"£»Î´Åä¶Ô / ¶ÏÁ´Ê±Á¢¼´»Øµ½Ä¬ÈÏµçÆ½£¨²»°ÑÄ¿±ê°´ÔÚ¸´Î»ÉÏ£©¡£
  *
  * ÎªÊ²Ã´²»ÔÚ ISR ÀïÖ±½Ó°áÒı½Å£¨ÀÏĞĞÎª£ºÔÚ RF »Øµ÷ÀïÖ±½ÓĞ´ PA2/PA3£©£º
@@ -115,10 +116,8 @@ static volatile uint8_t  gIoStausPending;   /* ×îºóÒ»´ÎÏÂ·¢µÄ ioStaus£¨Ö»±£Áô×îÖ
 static volatile uint32_t gIoTickPending;    /* ×îºóÒ»´ÎÏÂ·¢µÄÊ±¿Ì£¨SysTick ¼ÆÊı£© */
 /* ÏÂÃæÈı¸öÍ¬Ñù»á±» ISR£¨¶ÏÁ´Ê±µÄ rfDtrRtsToDefault£©¶Á¸Ä£¬ËùÒÔÒ»²¢ volatile */
 static volatile uint8_t  gHostRts;          /* Ö÷»ú RTS µÄÂß¼­µçÆ½£º1 = Î´¶ÏÑÔ£¨Ä¬ÈÏ¸ß£© */
-static volatile uint8_t  gRtsHoldActive;    /* ÕıÔÚÅÜ"Ö÷»úÊÍ·Åºó±£³ÖµÍ"µÄ´°¿Ú */
-static volatile uint32_t gRtsHoldTick;      /* ¸Ã´°¿ÚµÄÆğµã£¨SysTick ¼ÆÊı£© */
-static volatile uint32_t gRtsHoldTicks;     /* ¸Ã´°¿ÚÒª¶à³¤£¨tick£©¡ª¡ªÊÍ·ÅÊ±°´ RTS_MIN_LOW_MS Ëã³öÀ´ */
-static volatile uint32_t gRtsLowTick;       /* RTS ¶ÏÑÔ£¨PA2 ±»À­µÍ£©µÄÊ±¿Ì£¬ÓÃÀ´Á¿ÒÑµÍÁË¶à¾Ã */
+static volatile uint8_t  gRtsPulseStage;    /* ¸´Î»Âö³å½×¶Î£º0=¿ÕÏĞ 1=ÑÓ³ÙÖĞ(PA2 ¸ß) 2=Âö³åÖĞ(PA2 µÍ) */
+static volatile uint32_t gRtsPulseTick;     /* µ±Ç°½×¶ÎµÄÆğµã£¨SysTick ¼ÆÊı£© */
 
 /* Á½½Å»Øµ½Ä¬ÈÏ£¨Î´¶ÏÑÔ = Êä³ö¸ß£©£¬²¢¶ªµôµÈ´ıÖĞµÄ IO ×´Ì¬¡£
  * ÉÏµçÓë¶ÏÁ´Ê±µ÷ÓÃ£º¶ÏÁ´²»°ÑÄ¿±êÒ»Ö±°´ÔÚ¸´Î»ÉÏ¡£ */
@@ -126,8 +125,7 @@ static void __attribute__((noinline)) rfDtrRtsToDefault( void )
 {
     GPIOA_SetBits( DTR_PIN | RTS_PIN );
     gHostRts       = 1;
-    gRtsHoldActive = 0;
-    gRtsHoldTicks  = LedMsToTicks( RTS_RELEASE_HOLD_MS );
+    gRtsPulseStage = 0;                     /* ¶ªµôÔÚ·ÉµÄ¸´Î»Âö³å */
     gIoPending     = 0;
 }
 
@@ -138,18 +136,29 @@ static void __attribute__((noinline)) rfQueueDtrRts( uint8_t ioStaus )
     gIoPending      = 1;
 }
 
-/* Ö÷Ñ­»·µ÷ÓÃ£º¢Ù ÏÈ¿´"Ö÷»úÊÍ·Åºó±£³ÖµÍ"´°¿Úµ½ÆÚÃ»ÓĞ£»¢Ú ÔÙ°Ñµ½ÆÚµÄ IO ×´Ì¬°áÏÂÈ¥¡£
+/* Ö÷Ñ­»·µ÷ÓÃ£º¢Ù ÏÈÍÆ½ø¸´Î»Âö³å×´Ì¬»ú£»¢Ú ÔÙ°Ñµ½ÆÚµÄ IO ×´Ì¬°áÏÂÈ¥¡£
  * ¿ÌÒâ²»¼Ó __HIGH_CODE£¨Ê¡´Ó»ú RAM£¬Ö÷Ñ­»·µ÷Ëü²»Ãô¸Ğ£©¡£ */
 static void __attribute__((noinline)) rfFlushDtrRts( void )
 {
     uint8_t io;
 
-    /* ¢Ù Ö÷»úÒÑÊÍ·Å RTS£º±£³ÖµÍÂú RTS_RELEASE_HOLD_MS ²Å»ØÄ¬ÈÏ¸ß£¨Ö»¶¯ PA2£¬²»Åö DTR£© */
-    if( gRtsHoldActive
-     && (uint32_t)( SysTick->CNT - gRtsHoldTick ) >= gRtsHoldTicks )
+    /* ¢Ù ¸´Î»Âö³å·¢ÉúÆ÷£ºÑÓ³ÙÖĞ -> µ½µãÀ­µÍ£»Âö³åÖĞ -> µ½µã»Ø¸ß£¨Ö»¶¯ PA2£¬²»Åö DTR£© */
+    if( gRtsPulseStage == 1 )
     {
-        gRtsHoldActive = 0;
-        GPIOA_SetBits( RTS_PIN );
+        if( (uint32_t)( SysTick->CNT - gRtsPulseTick ) >= LedMsToTicks( RTS_PULSE_DELAY_MS ) )
+        {
+            gRtsPulseStage = 2;
+            gRtsPulseTick  = SysTick->CNT;
+            GPIOA_ResetBits( RTS_PIN );     /* Âö³å¿ªÊ¼ */
+        }
+    }
+    else if( gRtsPulseStage == 2 )
+    {
+        if( (uint32_t)( SysTick->CNT - gRtsPulseTick ) >= LedMsToTicks( RTS_PULSE_LOW_MS ) )
+        {
+            gRtsPulseStage = 0;
+            GPIOA_SetBits( RTS_PIN );       /* Âö³å½áÊø£º»Ø¸ß */
+        }
     }
 
     /* ¢Ú µ½ÆÚµÄ IO ×´Ì¬ */
@@ -177,36 +186,28 @@ static void __attribute__((noinline)) rfFlushDtrRts( void )
     if( io & 0x20 )     GPIOA_SetBits( DTR_PIN );
     else                GPIOA_ResetBits( DTR_PIN );
 
-    /* RTS£¨PA2£©£º¶ÏÑÔÁ¢¼´À­µÍ£»ÊÍ·ÅÑØÆğÒ»¸ö"±£³ÖµÍ"´°¿Ú */
-    if( !( io & 0x40 ) )                    /* Ö÷»ú¶ÏÑÔ RTS */
+    /* RTS£¨PA2£©£º¼û uart.h µÄ RTS_PULSE_* ¡ª¡ª ¶ÏÑÔÑØ´¥·¢Ò»´Î"ÏÈÑÓ³Ù¡¢ÔÙ¹Ì¶¨Âö¿í"µÄ¸´Î»Âö³å */
+#if (RTS_PULSE_DELAY_MS == 0) && (RTS_PULSE_LOW_MS == 0)
+    /* Á½¸öÖµ¶¼Îª 0£º²»×öÂö³å·¢ÉúÆ÷£¬PA2 ´¿¸úËæÖ÷»ú RTS£¨ÀÏĞĞÎª£© */
+    if( io & 0x40 )     GPIOA_SetBits( RTS_PIN );
+    else                GPIOA_ResetBits( RTS_PIN );
+    gHostRts = ( io & 0x40 ) ? 1 : 0;
+#else
+    if( !( io & 0x40 ) )                    /* Ö÷»ú¶ÏÑÔ RTS£¨µÍ£© */
     {
-        gHostRts       = 0;
-        gRtsHoldActive = 0;                 /* ÓÖ°´ÏÂÁË£ºÈ¡Ïû´ı»Ö¸´£¬¼ÌĞøÑ¹×¡ */
-        gRtsLowTick    = SysTick->CNT;      /* ¼ÇÏÂ¶ÏÑÔÊ±¿Ì£ºRTS_MIN_LOW_MS ´ÓÕâÀïËãÆğ */
-        GPIOA_ResetBits( RTS_PIN );
-    }
-    else if( !gHostRts )                    /* 0 -> 1 ÊÍ·ÅÑØ£ºÆğ´°¿Ú£¬Òı½ÅÏÈ±£³ÖµÍ */
-    {
-        uint32_t lowed = (uint32_t)( SysTick->CNT - gRtsLowTick );   /* ÒÑ¾­µÍÁË¶à¾Ã£¨tick£© */
-
-        gHostRts       = 1;
-        gRtsHoldActive = 1;
-        gRtsHoldTick   = SysTick->CNT;
-        /* ÊÍ·ÅºóÖÁÉÙÔÙ±£³Ö RTS_RELEASE_HOLD_MS£»Èô RTS_MIN_LOW_MS »¹Ã»µ½£¬¾Í²¹×ã²î¶î¡£
-         * ÉÏÎ»»ú¸øµÄÂö³å±È RTS_MIN_LOW_MS »¹¿í£¨lowed ÒÑ¹»£©Ê±£¬ĞĞÎªÓëÀÏ°æÒ»ÖÂ¡£ */
-        gRtsHoldTicks  = LedMsToTicks( RTS_RELEASE_HOLD_MS );
+        if( gHostRts && !gRtsPulseStage )   /* ¶ÏÑÔÑØ + µ±Ç°¿ÕÏĞ -> Æô¶¯Ò»´ÎÂö³åĞòÁĞ */
         {
-            uint32_t need = LedMsToTicks( RTS_MIN_LOW_MS );
-            if( lowed < need && ( need - lowed ) > gRtsHoldTicks )
-            {
-                gRtsHoldTicks = need - lowed;
-            }
+            gRtsPulseStage = 1;             /* 1 = ÑÓ³ÙÖĞ£¨´Ë¼ä PA2 ±£³Ö¸ß¡¢²»¸´Î»£© */
+            gRtsPulseTick  = SysTick->CNT;
+            GPIOA_SetBits( RTS_PIN );
         }
+        gHostRts = 0;
     }
-    else if( !gRtsHoldActive )              /* Ôç¾ÍÊÍ·Å¡¢´°¿ÚÒ²¹ıÁË£ºÈ·ÈÏÊÇÄ¬ÈÏ¸ß */
+    else                                    /* Ö÷»úÊÍ·Å RTS£º²»Ó°ÏìÒÑÆô¶¯µÄÂö³åĞÎ×´ */
     {
-        GPIOA_SetBits( RTS_PIN );
+        gHostRts = 1;
     }
+#endif
 }
 #endif
 

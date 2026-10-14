@@ -8,28 +8,32 @@
 
 | # | 板 | 文件 | 行为变化 | 资源 | 桌面固件 MD5 |
 |---|---|---|---|---|---|
-| 1 | 从机 | `RF_Uart/APP/include/uart.h`（新增 `RTS_MIN_LOW_MS 500`）、`RF_Uart/APP/rf_uart_tx.c`（`rfFlushDtrRts()`） | **RTS 断言后，PA2 至少压低 500 ms** 才允许回高（上位机提前释放也不理会，由从机把差额补齐） | FLASH 12796 B（5.21%）、RAM 11500 B（93.59%） | `aa442b368609458bbfb1671714ef6d6f`（含改动 1+3） |
+| 1 | 从机 | `RF_Uart/APP/include/uart.h`（`RTS_PULSE_DELAY_MS 500` / `RTS_PULSE_LOW_MS 200`）、`RF_Uart/APP/rf_uart_tx.c`（`rfFlushDtrRts()` 复位脉冲状态机） | **RTS 断言沿生成固定复位脉冲**：先等 500 ms（此间 PA2 保持高）→ 再压低 200 ms → 回高；与上位机按多久无关。两值都置 0 = 恢复纯跟随 | FLASH 12772 B（5.20%）、RAM 11492 B（93.52%） | `166d3902ee5acd8f82c578dc045f8c50`（含改动 1+3） |
 | 2 | 主机 | `RF_UartDongle/APP/rf_uart_rx.c`（`rf_bound()` / 新增 `rfBoundConfirm()` / `rfProcessRx()` 已绑定分支入口） | **"已连接"改由"在新参数上收到从机第一包"认定**（不再在 BOUND_RSP 发完那一刻单向假定）：LED 熄灭、USB 枚举、`serverData` 落盘都挪到那时 | FLASH 21772 B（8.86%）、RAM 10272 B（83.59%） | `506c865aebd3ba76979645f0dada0d61` |
-| 3 | 从机 | `RF_Uart/APP/rf_uart_tx.c`（`PKT_DATA_RSP_ACK` 分支） | **空 ACK / 保活包不再驱动 LED**：`LedDataPulse()` 移进"确实带下行数据"的判断里 | 与改动 1 同一份固件 | `aa442b368609458bbfb1671714ef6d6f` |
+| 3 | 从机 | `RF_Uart/APP/rf_uart_tx.c`（`PKT_DATA_RSP_ACK` 分支） | **空 ACK / 保活包不再驱动 LED**：`LedDataPulse()` 移进"确实带下行数据"的判断里 | 与改动 1 同一份固件 | `166d3902ee5acd8f82c578dc045f8c50` |
 
 对照：v0.4.1 的从机固件 = `2900527a…`，主机固件 = `e0868a85…`。
 
-### 1. RTS 最小低电平（从机）
+### 1. RTS = 复位脉冲发生器（从机）
 
-**为什么**：Ai-WB2/BL602 经本桥进 ROM ISP 时，**RST 低电平要求 ≥ 500 ms**；而 `bflb` ISP 工具的复位脉冲
-**在 115200 下够宽、921600 下只有约 234 ms** → 921600 烧录时工具永远停在 `Please Press Reset Key!`、
-等不到 `shake hand success`（极易误判成"无线桥不能烧录"）。
+**为什么**：Ai-WB2/BL602 经本桥进 ROM ISP 时，`bflb` ISP 工具的复位脉冲在 **115200 下够宽、能进 ISP**，
+而 **921600 下只有约 234 ms 且来得太早** → 工具永远停在 `Please Press Reset Key!`、等不到
+`shake hand success`（极易误判成"无线桥不能烧录"）。
 
-**怎么改**：`rfFlushDtrRts()` 里记录断言时刻；释放沿按"还差多少"决定保持时长
-（`max(RTS_RELEASE_HOLD_MS, RTS_MIN_LOW_MS − 已低时长)`）。**闭环在从机侧** —— 保证的是 PA2 引脚上的
-物理宽度，与 PC 给多宽、RF 投递抖动无关。DTR/PA3（BOOT0）仍是纯跟随；`0x7F` 一键下载时序走另一条路，
-不受影响；`RTS_MIN_LOW_MS 0` 可回到老行为（只保留 30 ms 释放保持）。
+**怎么改**（演化过程：先做过"保证 ≥500 ms 低电平"，后按实测改成**固定形状的脉冲发生器**）：
+从机不再"跟随"上位机的脉宽，而是在 **RTS 断言沿**启动一次固定序列：
 
-**怎么验**：
-1. 烧桌面 `RF_Uart.hex`，主机不换也能测；
-2. **工具设置全部保持原样**跑 `make flash b=921600` → 应能进 ISP、开始写 flash；
-3. 想眼见为实：`python3 tools/loss-test/dtr_rts_test.py --mode monitor` 盯 PA2，跑一次烧录，
-   应看到**一次 ≥500 ms 的低电平**（改之前约 234 ms）。
+```
+断言沿 --[先等 RTS_PULSE_DELAY_MS = 500ms，此间 PA2 保持高]--> 压低 PA2 --[低 RTS_PULSE_LOW_MS = 200ms]--> 回高
+```
+
+前 500 ms 延迟是留给上位机把 **BOOT0（DTR/PA3）** 等线摆好、并开始发同步字节（工具通常是
+"先设 BOOT、再拉 RESET、然后发同步"）；脉冲形状与上位机按多久完全解耦。两个值都置 0 可恢复
+"PA2 纯跟随 RTS"的老行为。实现：`gRtsPulseStage`（0 空闲 / 1 延迟中 / 2 脉冲中）在
+`rfFlushDtrRts()` 里由主循环推进，零阻塞。
+
+**怎么验**：`python3 tools/loss-test/dtr_rts_test.py --mode monitor` 盯 PA2 —— 上位机断言 RTS 后应看到
+**先保持高约 500 ms，再出现一次约 200 ms 的低电平**，然后回高（与上位机按多久无关）。
 
 ### 2. "已连接"判定（主机）
 
