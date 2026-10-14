@@ -142,7 +142,10 @@ static void __attribute__((noinline)) rfFlushDtrRts( void )
 {
     uint8_t io;
 
-    /* ① 复位脉冲发生器：延迟中 -> 到点拉低；脉冲中 -> 到点回高（只动 PA2，不碰 DTR） */
+    /* ① 复位脉冲状态机（只动 PA2，不碰 DTR）：
+     *    1 = 延迟中（PA2 保持高）-> 到点拉低；
+     *    2 = 已拉低 -> **上位机释放了**且低电平已满最短脉宽才回高；
+     *        上位机一直按着就一直是低（兼容"按住 RESET"的上位机流程） */
     if( gRtsPulseStage == 1 )
     {
         if( (uint32_t)( SysTick->CNT - gRtsPulseTick ) >= LedMsToTicks( RTS_PULSE_DELAY_MS ) )
@@ -154,10 +157,11 @@ static void __attribute__((noinline)) rfFlushDtrRts( void )
     }
     else if( gRtsPulseStage == 2 )
     {
-        if( (uint32_t)( SysTick->CNT - gRtsPulseTick ) >= LedMsToTicks( RTS_PULSE_LOW_MS ) )
+        if( gHostRts                                  /* 上位机已释放 RTS */
+         && (uint32_t)( SysTick->CNT - gRtsPulseTick ) >= LedMsToTicks( RTS_PULSE_LOW_MS ) )
         {
             gRtsPulseStage = 0;
-            GPIOA_SetBits( RTS_PIN );       /* 脉冲结束：回高 */
+            GPIOA_SetBits( RTS_PIN );       /* 复位结束：回高 */
         }
     }
 
@@ -203,7 +207,7 @@ static void __attribute__((noinline)) rfFlushDtrRts( void )
         }
         gHostRts = 0;
     }
-    else                                    /* 主机释放 RTS：不影响已启动的脉冲形状 */
+    else                                    /* 主机释放 RTS：交给状态机收尾（低满最短脉宽后回高） */
     {
         gHostRts = 1;
     }
