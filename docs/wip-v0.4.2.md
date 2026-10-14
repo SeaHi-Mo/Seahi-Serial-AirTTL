@@ -90,14 +90,30 @@
 2. 改完之后 PC 端串口工具也要用同一个速率，否则一样是乱码；
 3. 与本桥固件无关 —— 从机只是**忠实夹到 1.5 Mbps**。
 
-**仍然未解决（与本条无关）**：helloworld 用 `make flash` 走本桥**烧录仍然失败** ——
-桥侧 `shake hand success` 之后在**载入 helper**（`eflash_loader_40m.bin`，37184 B）时出错：
-进度到 `4080/37184` 就报不认识回应、`BFLB LOAD HELP BIN FAIL`。
-已知对照：**同一套工具、同一块桥烧 `AiPi-Clock-Mini` 成功**。
-待查方向（按优先级）：① 成功那次用的**速率**（有一份 Clock-Mini 尝试的日志显示 `com speed: 115200`，
-而失败的 helloworld 用的是 921600）-> 先试 `make flash b=115200`；
-② 两个工程用的**烧录工具版本**是否不同（Clock-Mini 的 `flash.sh` 用的是它自带 `sdk/` 里那套）；
-③ 从机 0x7F 一键下载是否在 ISP 会话中途抢了 BOOT/RESET（诊断件 `RF_Uart-noSTISP.hex`）。
+**helloworld 烧录失败的根因已定位：分区表与 flash 容量不匹配**（2026-10-14，工具日志佐证）：
+
+工具日志 `tools/flash_tool/log/flashcube_20261014.log` 里两次记录对比得很清楚——
+
+| | 成功：AiPi-Clock-Mini | 失败：SDK helloworld |
+|---|---|---|
+| 固件 | `AiPi-Clock-Mini/build_out/WB2-clock2.bin` | `get-started/helloworld/build_out/helloworld.bin` |
+| 分区表 | `tools/axk_uart_ota/partition/partition_cfg_4M_clock_uart_ota.toml`（内容按 2MB 排） | `tools/axk_uart_ota/partition/partition_cfg_4M_uart_ota.toml`（**4M** 排） |
+| 波特率 | 115200 | 921600 / 115200 都试过 |
+| 工程配置 | `CONFIG_BOARD_FLASH_SIZE := 2`、`CONFIG_UART_OTA_PARTITION := 4M_clock` | `CONFIG_BOARD_FLASH_SIZE := 4` ✗、`CONFIG_UART_OTA_PARTITION := 4M` ✗ |
+| 结果 | 成功 | 工具直接报 **`Please check your partition table file`** ✗ |
+
+而日志里工具自己读到的是 **`chip flash id: ef4015`** = W25Q16 = **2 MB** ✗ —— 给一张 4M 的表，工具当场拒绝。
+**结论：与无线桥无关**（同一条桥、同一套工具，Clock-Mini 成功；速率也已排除：成功那次也是 115200）。
+
+**修法**（三选一或叠加）：
+1. `applications/get-started/helloworld/proj_config.mk` 改成与实际硬件一致：
+   `CONFIG_BOARD_FLASH_SIZE := 2`、`CONFIG_UART_OTA_PARTITION := 2M`
+   （2M 的表已存在：`tools/axk_uart_ota/partition/partition_cfg_2M_uart_ota.toml`）；
+2. 用 SDK 原生 `make flash`（它固定用 `chips/bl602/partition/partition_cfg_2M.toml` = 2M 表）；
+3. 若用 GUI（BLDevCube），把 **Partition Table 指到 2M 那份**，别用 4M 的。
+
+另：`CONFIG_UART_OTA_FAST_BAUD` 只影响**运行时的控制台打印**（2 Mbps 会被从机夹到 1.5 Mbps -> 乱码），
+与烧录成败无关 —— 见本节开头。
 
 ## 二、已经发布的部分（对照用）
 
