@@ -182,6 +182,18 @@ static void __attribute__((noinline)) rfApplyDtrPol( uint8_t pol )
     if( gDtrPol )   GPIOA_ResetBits( DTR_PIN );
     else            GPIOA_SetBits( DTR_PIN );
     rfSaveDtrPol( );                    /* 掉电保存（与绑定信息同扇区） */
+
+    /* 【保存完自行重启】极性已落 Flash，重启后由 RF_DtrPolLoad() 从一开始就按新极性摆
+     * 上电默认电平，运行状态也一并清干净。现场反馈：切完极性后从机 LED 会异常亮一段、
+     * UART 发送环卡住，只能手动重启 —— 既然手动重启能恢复，就让它自己重启。
+     * 代价：链路断一次，主机超时后重新绑定（主机会把 gDataSeq 归零重新同步）。
+     * 注意 rfSaveDtrPol() 已把 bootCount 清零，这次主动重启不计入「连重启 5 次解绑」。
+     * 幂等：极性没变时本函数在上面就 return 了，所以主机重发同一包 DTR_POL 不会重启第二遍。 */
+    rfDelayMs( 2 );                     /* 只留极小余量让 Flash 写完落定；用户要"收到就直接重启" */
+    SYS_ResetExecute( );
+    while( 1 )
+    {
+    }                                   /* 不应返回 */
 }
 
 static void __attribute__((noinline)) rfQueueDtrRts( uint8_t ioStaus )
@@ -637,8 +649,15 @@ static void rfProcessRx( rfPackage_t *pPkt )
 #if((defined(DTR_RTS_FUNC)) && (DTR_RTS_FUNC == TRUE))
             else if( pRsp_t->opcode == OPCODE_DTR_POL )
             {
-                /* 【DTR 极性】只记值；改电平 + 写 Flash 交给主循环（见 rfFlushDtrRts） */
+                /* 【DTR 极性：收到就立刻做，不等主循环】
+                 * 原来只记标志、由主循环的 rfFlushDtrRts() 去改电平和写 Flash。实测那条路
+                 * 一发出极性指令就先陷入约 6 秒的序号失步重传风暴（主机 dup/rtx ~3100/s），
+                 * 保存和重启都被排在风暴之后 —— 现场就是"发完指令，过好几秒从机才重启"。
+                 * 改成在这里（射频 ISR 内）立刻做完：改电平 -> 写 Flash -> 软复位。
+                 * 与 rf_bound() 保存绑定是同一个上下文（ISR 内写 Flash），那条路一直是好的。
+                 * 下面仍置一次标志，作为"万一没能立刻重启"的兜底。 */
                 rfQueueDtrPol( pRsp_t->other.rspData[0] );
+                rfApplyDtrPol( pRsp_t->other.rspData[0] );
             }
 #endif
             else if( pRsp_t->opcode == OPCODE_DATA )
@@ -1141,19 +1160,37 @@ static int __HIGH_CODE rfSaveBoundInfoTry( rfBoundInfo_t *info )
      * 原实现只查 VERIFY、丢弃了 ERASE/WRITE 的返回值 —— 若擦除未成功，Flash 写入
      * 按位与（1->0）仍可能通过校验，旧数据与新数据混在一起，绑定/解绑行为诡异且
      * 无从排查。这里三者都查，便于上层判断失败原因。 */
-    if( FLASH_ROM_ERASE( BOUND_INFO_FLASH_ADDR, 4096 ) != 0 )
+    /* 【必须在擦写期间关中断】Flash 擦写期间 CPU 取指受限：此时若来了中断，而 ISR 或其
+     * 调用链上有任何**驻留 Flash**的代码，取指就会失败 -> 状态损坏/跑飞。
+     * 绑定 / 上电计数 / 解绑这三个写点都跑在**射频 ISR 内**（rf_bound 等），射频 ISR 不能
+     * 自我抢占，所以一直没暴露；而【DTR 极性】的写点在**主循环**
+     * （rfFlushDtrRts -> rfApplyDtrPol -> rfSaveDtrPol），擦写期间射频 ISR 照常触发 ——
+     * 现场表现正是"发完 A5 5A 01 <pol>，从机 LED 恒亮、UART 发送环卡住、只能重启从机"。
+     * 这里统一关中断把四条写路径一起保护。用 SYS_ 版：它带中断使能状态的保存/恢复，
+     * 可嵌套、不会误开本来关着的中断。擦写只有几毫秒，期间丢几个轮询包无妨
+     * （主机会照常重发；绑定那条路径本来就在 ISR 里独占同样长的时间）。 */
     {
-        return -1;
+        uint32_t irqSta;
+        int rc = 0;
+
+        SYS_DisableAllIrq( &irqSta );
+
+        if( FLASH_ROM_ERASE( BOUND_INFO_FLASH_ADDR, 4096 ) != 0 )
+        {
+            rc = -1;
+        }
+        else if( FLASH_ROM_WRITE( BOUND_INFO_FLASH_ADDR, info, sizeof(*info) ) != 0 )
+        {
+            rc = -2;
+        }
+        else if( FLASH_ROM_VERIFY( BOUND_INFO_FLASH_ADDR, info, sizeof(*info) ) != 0 )
+        {
+            rc = -3;
+        }
+
+        SYS_RecoverIrq( irqSta );
+        return rc;
     }
-    if( FLASH_ROM_WRITE( BOUND_INFO_FLASH_ADDR, info, sizeof(*info) ) != 0 )
-    {
-        return -2;
-    }
-    if( FLASH_ROM_VERIFY( BOUND_INFO_FLASH_ADDR, info, sizeof(*info) ) != 0 )
-    {
-        return -3;
-    }
-    return 0;
 }
 
 /* 重试与报警：刻意**不加** __HIGH_CODE（省 RAM）。
@@ -1204,8 +1241,13 @@ static void __attribute__((noinline)) rfSaveDtrPol( void )
 
     info.head       = pInfo->head;
     info.serverData = pInfo->serverData;
-    info.bootCount  = pInfo->bootCount;
-    info.resv       = pInfo->resv;
+    /* 【主动重启前清零】切完极性从机会自己重启（见 rfApplyDtrPol）；若把计数留着，
+     * 这次重启会让它 +1 —— 连改 5 次极性就触发「连续重启 BOOT_UNBIND_TIMES 次解绑」。
+     * 归零 = 把这次主动重启从计数里摘出去。安全性：极性指令只能从**已建立的链路**
+     * 下发，所以设备此刻不可能是"卡在启动循环"的状态，清零不会削弱该保护。
+     * resv 一并写成魔数：确保下次上电 bootCount 被当成"有效且为 0"读回。 */
+    info.bootCount  = 0;
+    info.resv       = BOOT_CNT_MAGIC;
     rfSaveBoundInfo( &info );
     PRINT("dtr pol saved:%d\n", gDtrPol);
 }

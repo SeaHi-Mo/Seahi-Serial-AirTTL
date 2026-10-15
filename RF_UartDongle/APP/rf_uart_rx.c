@@ -93,6 +93,22 @@ static volatile uint16_t gCrcErrCnt = 0;    /* RF ÖÐ¶ÏÀïµÄ CRC ´í´ÎÊý */
 static volatile uint16_t gRxErrCnt  = 0;    /* ÊÕµ½"ÐòºÅ²»ÈÏÊ¶"µÄ°ü£¨Ê§²½Õ÷Õ×£©´ÎÊý */
 static volatile uint16_t gUlostCnt  = 0;    /* ÉÏÐÐÊý¾ÝÒò RF »·Âú±»¶ªµÄ´ÎÊý£¨PC ²àÀ´²»¼°È¡£©*/
 static volatile uint16_t gRejCnt    = 0;    /* Åä¶Ô±»¾Ü´ÎÊý£¨ÑÏ¸ñ°ó¶¨²»·û / RSSI ²»¹»£©*/
+/* ¡¾Õï¶Ï¡¿×·²é"´Ó»ú LED ºãÁÁ"£º´Ó»úÖØ´«£¨ÖØ¸´ seq£©+ ÆäÖÐÕæµÄ´øÏÂÐÐÊý¾ÝÖØ·¢³öÈ¥µÄ´ÎÊý¡£
+ * Èô dup/rtx ³ÖÐøºÜ¸ß ¡ú ´Ó»ú UART ·¢ËÍ»·³¤ÆÚÂú£¨gRfRxFullHold£©£¬Ö÷»úÔÚ·´¸´ÖØ·¢Í¬Ò»°ü£¬
+ * ´Ó»úÃ¿ÊÕÒ»°ü¾Í LedDataPulse() Ò»´Î ¡ú LED ¿´ÆðÀ´ºãÁÁ£¬ÇÒ n »áÃ÷ÏÔ¸ßÓÚÂÖÑ¯»ùÆµ¡£ */
+static volatile uint16_t gDupCnt    = 0;    /* ´Ó»úÖØ´«£¨ÖØ¸´ seq£©×Ü´ÎÊý */
+static volatile uint16_t gResendCnt = 0;    /* ÆäÖÐÃüÖÐÁËÊý¾Ý»º´æ¡¢Ô­ÑùÖØ·¢³öÈ¥µÄ´ÎÊý */
+static volatile uint16_t gGiveUpCnt = 0;    /* ¡¾ÆÆ»îËø¡¿·ÅÆúÖØ·¢¡¢¸Ä»Ø¿Õ ACK µÄ´ÎÊý */
+
+/* ¡¾ÆÆ»îËøÉÏÏÞ¡¿Í¬Ò»¸ö seq Á¬ÐøÖØ·¢³¬¹ýÕâÃ´¶à´Î = ´Ó»úÃ»ÓÐ½øÕ¹£¨ËüµÄ UART ·¢ËÍ»·ÅÅ¿Õ
+ * Í£°Ú -> Ò»Ö±"»·Âú²»È·ÈÏ"£©£¬´ËÊ±±ØÐë·ÅÆúÖØ·¢¡¢»Ø¿Õ ACK£¬ÈÃ´Ó»úµÄ gTxDataSeq ÄÜ¼ÌÐø×ß¡£
+ * Õý³£·´Ñ¹£¨»·ÂúµÈ UART ÒÔ 9600 ÂýÂýÍÂ£©×î¶à³ÖÐø¼¸°ÙºÁÃë¡¢ÖØ·¢Ô¼Ò»Á½Ç§´Î¾ÍÍÆ½øÁË£¬
+ * ËùÒÔ 20000 ²»»áÎóÉË£»¶øÓÀ¾Ã»îËø»áÔÚÔ¼ 6 Ãëºó±»´òÆÆ¡£
+ * 2026-10-15 Êµ²â»îËøÏÖ³¡£ºdup 3056 rtx 3056£¨Í¬Ãë n 3059£©ÇÒÉÏÎ»»ú usb 0 ×Ö½ÚÔÚ·¢ ¡ª¡ª
+ * ¿Õ¿Ú±»´¿ÖØ´«Õ¼Âú¡¢´Ó»ú LED ÒòÃ¿°ü¶¼ LedDataPulse ¶øºãÁÁ£¬Ö»ÓÐÖØÆô´Ó»ú²Å»Ö¸´¡£ */
+#define LINK_RESEND_GIVEUP_N    20000
+static uint8_t  gResendSeq  = 0;            /* µ±Ç°Á¬ÐøÖØ·¢µÄ seq */
+static uint16_t gResendSame = 0;            /* ¸Ã seq ÒÑÁ¬ÐøÖØ·¢¶àÉÙ´Î */
 static volatile uint16_t gRejLocal  = 0;    /* ×î½üÒ»´Î±»¾ÜÊ±£º±¾»ú¼ÇÂ¼µÄ°ó¶¨Öµ */
 static volatile uint16_t gRejRemote = 0;    /* ×î½üÒ»´Î±»¾ÜÊ±£º´Ó»ú´øÀ´µÄ°ó¶¨Öµ */
 static volatile int8_t   gLastRssi  = 0;    /* ×î½üÒ»´ÎÊÕµ½µÄ¹ã²¥ RSSI£¨Åä¶ÔÊ±¿´Ëü£©*/
@@ -115,6 +131,7 @@ static volatile uint8_t  gJoinCooling  = 0;   /* fix4£º1 = µôÁ´ÀäÈ´ÆÚÄÚ£¬ÔÝ²»½ÓÊ
 static volatile uint32_t gJoinCoolTick = 0;   /* fix4£ºµôÁ´Ê±¿Ì£¨SysTick ¼ÆÊý£©*/
 static uint8_t           gBadQualCnt   = 0;   /* fix5£ºÁ¬Ðø"ÖÊÁ¿²»´ï±ê"µÄÃëÊý£¨½öÖ÷Ñ­»·ÓÃ£©*/
 extern volatile uint16_t gUsbOvfCnt;        /* ¶¨ÒåÔÚ usb_uart.c£ºUSB OUT »·Âú´ÎÊý */
+extern volatile uint16_t gUsbRxCnt;         /* ¶¨ÒåÔÚ usb_uart.c£º±¾ÖÜÆÚ USB ÊÕµ½µÄÔ­Ê¼×Ö½ÚÊý */
 /* ¶¨ÒåÔÚ rf.c£¨Á½¶Ë¹²ÓÃµ××ù£¬Î´ÔÚ rf.h Àïµ¼³ö£©£ºrfRxStartChecked() Òª×Ô¼ºÉè½ÓÊÕ´°¿Ú */
 extern rfipRx_t          gRxParam;
 static uint32_t          gDiagLastTick = 0;
@@ -193,15 +210,22 @@ static void __attribute__((noinline)) rfDiagReport( void )
         }
     }
 
-    if( gCrcErrCnt || gRxErrCnt || gUlostCnt || gUsbOvfCnt )
+    if( gCrcErrCnt || gRxErrCnt || gUlostCnt || gUsbOvfCnt || gDupCnt || gResendCnt || gUsbRxCnt )
     {
-        PRINT( "crc %u rxerr %u ulost %u usbovf %u\n",
+        PRINT( "crc %u rxerr %u ulost %u usbovf %u dup %u rtx %u usb %u\n",
                (unsigned)gCrcErrCnt, (unsigned)gRxErrCnt,
-               (unsigned)gUlostCnt, (unsigned)gUsbOvfCnt );
+               (unsigned)gUlostCnt, (unsigned)gUsbOvfCnt,
+               (unsigned)gDupCnt, (unsigned)gResendCnt,
+               (unsigned)gUsbRxCnt );
+        if( gGiveUpCnt ) { PRINT( "giveup %u\n", (unsigned)gGiveUpCnt ); }
         gCrcErrCnt = 0;
         gRxErrCnt  = 0;
         gUlostCnt  = 0;
         gUsbOvfCnt = 0;
+        gDupCnt    = 0;
+        gResendCnt = 0;
+        gUsbRxCnt  = 0;
+        gGiveUpCnt = 0;
     }
     if( gRejCnt )
     {
@@ -319,6 +343,21 @@ static void __attribute__((noinline)) rfCacheDownlink( rfPackage_t *pPkt )
  */
 static uint8_t __attribute__((noinline)) rfResendCached( rfPackage_t *pPkt, rfPackage_t *pPkt_t )
 {
+    gDupCnt ++;                             /* ¡¾Õï¶Ï¡¿±¾º¯ÊýÖ»ÔÚ"´Ó»úÖØ´«"·ÖÖ§±»µ÷ÓÃ */
+
+    /* ¡¾ÆÆ»îËø¡¿Í¬Ò» seq Á¬ÐøÖØ·¢µ½ÉÏÏÞ¾Í·ÅÆú£¨·µ»Ø 0 -> µ÷ÓÃ·½»Ø¿Õ ACK£¬´Ó»úÍÆ½øÐòºÅ£©¡£
+     * ·ÅÔÚ×îÇ°Ãæ£ºÒ»µ©ÅÐ¶¨¿¨ËÀ£¬ºóÐøÍ¬ seq µÄµ÷ÓÃ»áÒ»Ö±·µ»Ø 0£¬·ç±©Á¢¿ÌÍ£¡£ */
+    if( gResendSeq != pPkt->seq )
+    {
+        gResendSeq  = pPkt->seq;
+        gResendSame = 0;
+    }
+    if( ++gResendSame > LINK_RESEND_GIVEUP_N )
+    {
+        gGiveUpCnt ++;
+        return 0;
+    }
+
     if( gLastDataRspLen == 0 )
     {
         return 0;
@@ -328,6 +367,7 @@ static uint8_t __attribute__((noinline)) rfResendCached( rfPackage_t *pPkt, rfPa
         return 0;
     }
     __MCPY( pPkt_t, gLastDataRsp, gLastDataRsp + gLastDataRspLen );
+    gResendCnt ++;                          /* ¡¾Õï¶Ï¡¿ÕæµÄ´øÁËÏÂÐÐÊý¾ÝÖØ·¢³öÈ¥ */
     return 1;
 }
 
@@ -811,6 +851,13 @@ static void rfProcessRx( rfPackage_t *pPkt )
                             pRsp_t->buad_t.ioStaus = Uart0Para.ioStaus;
                             pPkt_t->seq = gDataSeq;
                             pPkt_t->resv = 0;
+                            /* ¡¾±ØÐÞ¡¿»º´æÕâÒ»°ü ¡ª¡ª ·ñÔò DTR/RTS ×´Ì¬ÊÇ"Ö»·¢Ò»´Î¡¢¶ªÁË¾ÍÃ»ÁË"¡£
+                             * BSP ÊÇÈýÌõÏÂ·¢Â·¾¶ÀïÎ¨Ò»Â©ÁË»º´æµÄ£¨ÉÏÃæ DTR_POL ÓëÏÂÃæ DATA ¶¼ÓÐ£©£¬
+                             * ¶øÊµ²â¿Õ¿Ú¶ª°üÔ¼ 12%£º±¾°üÒ»¶ª£¬PC ÄÇ´Î DTR/RTS ²Ù×÷¾Í¾²Ä¬ÏûÊ§£¬
+                             * ÏÖ³¡±íÏÖÕýÊÇ"ÓÐÊ±Ë«»÷ DTR£¬´Ó»úÃ»·´Ó¦"¡£»º´æºóËü»áËæ´Ó»úµÄÖØ´«
+                             * ÇëÇó£¨ÖØ¸´ seq£©ÓÉ rfResendCached() Ô­ÑùÖØ·¢£¬ÓëÊý¾Ý°üÍ¬µÈ¿É¿¿¡£
+                             * ÖØ·¢ÊÇÃÝµÈµÄ£ºÏßÂëÃ»±ä rfApplyLineCode() Ö±½Ó·µ»Ø£¬IO ×´Ì¬ÖØÉèÎÞº¦¡£ */
+                            rfCacheDownlink( pPkt_t );
                         }
                         else
                         {
@@ -1231,7 +1278,7 @@ uint8_t RF_RxQuery( void *buf, typeBufSize *len, uint8_t usb_free )
  * @return  None.
  */
 /* ¹Ì¼þ±êÊ¶£º¿ª»ú´òÓ¡£¬±ãÓÚ´ÓÈÕÖ¾Ò»ÑÛÈ·ÈÏÉÕµÄÊÇÄÄÒ»°æ£¨±ðÔÙ³öÏÖ"²»ÖªµÀÉÕµÄÊÇÄÄ°æ"£© */
-#define RF_FW_TAG   "dongle reconnect-fix6: join>=-52dBm + keep-side crc/n>40%x3s"
+#define RF_FW_TAG   "dongle fix7: livelock-fence + BSP cached for DTR"
 
 __HIGH_CODE
 void RF_UartRxInit( void )

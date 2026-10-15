@@ -228,6 +228,10 @@ __aligned(4) uint8_t Ep1OUTDataBuf[MAX_PACKET_SIZE];
 uint32_t gEnd2DataLen;
 /* USB OUT 环形缓冲满（PC 灌太快）的次数：只在主循环汇总打印，不在 USB 中断里 PRINT */
 volatile uint16_t gUsbOvfCnt = 0;
+/* 【诊断】本报告周期内从 USB 收到的**原始字节数**（过滤魔数之前）。
+ * rtx 很大而本项为 0 -> 上位机根本没在发 -> 是从机 UART 发送通道坏了；
+ * 本项也很大 -> 上位机在灌数据、远超从机 UART 的 9600 -> 缺背压/流控。 */
+volatile uint16_t gUsbRxCnt = 0;
 
 /* 保存USB中断的状态 ->改成几组的操作方式 */
 #define USB_IRQ_FLAG_NUM     4
@@ -2181,6 +2185,7 @@ uint8_t USB_RxQuery( void *buf, typeBufSize *len )
          * 这样最坏情况仍不超过原来的 DATA_LEN_MAX_TX 上限（调用方的缓冲与包长都按它算）。 */
         *len = DATA_LEN_MAX_TX - gDtrPolHoldLen;
         gEnd2DataLen = read_buf( pUsbBuf,buf,len  );
+        gUsbRxCnt   += (uint16_t)(*len);    /* 【诊断】PC 实际发来的原始字节数 */
         /* 【DTR 极性】魔数拦截（未命中就原样返回）。gEnd2DataLen 是读完这一包后环里
          * 还剩多少 —— 只有"还剩数据"才允许把半截前缀留到下一包，避免字节被无限期扣住。 */
         *len = dtrPolMagicFilter( buf, *len, ( gEnd2DataLen != 0 ) ? 1 : 0 );
