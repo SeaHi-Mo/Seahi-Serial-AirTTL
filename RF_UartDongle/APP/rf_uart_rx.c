@@ -97,6 +97,8 @@ static volatile uint16_t gRejLocal  = 0;    /* 最近一次被拒时：本机记录的绑定值 
 static volatile uint16_t gRejRemote = 0;    /* 最近一次被拒时：从机带来的绑定值 */
 static volatile int8_t   gLastRssi  = 0;    /* 最近一次收到的广播 RSSI（配对时看它）*/
 extern volatile uint16_t gUsbOvfCnt;        /* 定义在 usb_uart.c：USB OUT 环满次数 */
+/* 定义在 rf.c（两端共用底座，未在 rf.h 里导出）：rfRxStartChecked() 要自己设接收窗口 */
+extern rfipRx_t          gRxParam;
 static uint32_t          gDiagLastTick = 0;
 
 /*******************************************************************************
@@ -246,6 +248,93 @@ static uint8_t __attribute__((noinline)) rfResendCached( rfPackage_t *pPkt, rfPa
     return 1;
 }
 
+/* ---- 断连时怎么处置射频 / 掉电后怎么恢复 ------------------------------------
+ * 【背景（实测现象）】拉距把链路拉断之后再也回连不上，只能给**主机**断电重上电；
+ * 重启从机没有任何用。根因就在下面这个 rf_disconnect()：
+ * RFRole_Shut() 关的是射频**电源**，而它之后工程只用 RFIP_SetRx()（= rf_rx_start()）
+ * 重新起收 —— 掉电弄丢的那组"唤醒寄存器"与射频前端校准值都不会被 SetRx 写回去
+ * （反汇编 libCH57xRF.a：RFRole_BasicInit → RFIP_RegInit = RFEND_DevInit +
+ *  RFIP_WakeUpRegInit + RFIP_Calibration，只有上电那条路才会做），于是主机变成"聋子"：
+ *   · 收不到任何包 → RF_bound_Flag 永远为 0 → LED 一直快闪、3 s 后 USB 也撤掉；
+ *   · gBoundStatus 已回 BOUND_STATUS_IDLE，超时回调只把 gRfStatus 置 WAIT、
+ *     **不打任何日志** → 现场看就是"静默死亡"，只能断电。
+ * 【从机不背这个锅】从机全工程没有 RFRole_Shut() 调用，它一直在广播 BOUND_REQ。
+ *
+ * RF_DISCONNECT_SHUT = 0（默认，推荐）：断连只停当前收发（RFRole_Stop），不关电源；
+ * RF_DISCONNECT_SHUT = 1：保留老行为（关电源），但关完立刻唤醒＋重新校准。
+ * 两个值可在台架上 A/B，不用改别的代码。 */
+#ifndef RF_DISCONNECT_SHUT
+#define RF_DISCONNECT_SHUT   0
+#endif
+
+/*******************************************************************************
+ * @fn      rfRadioRecover
+ *
+ * @brief   射频掉电后的恢复：补上 RFIP_SetRx() 不会做的那一步。
+ *
+ *          RFRole_Shut() 之后必须重新初始化 RFIP 寄存器并重做前端校准，否则收不到
+ *          任何包（见上面 RF_DISCONNECT_SHUT 的说明）。这里用库导出的
+ *          RFIP_WakeUpRegInit() + RFIP_Calibration()；RFIP_RegInit() 里还有一步
+ *          RFEND_DevInit()，但 CH572rf.h 未导出、调不到 —— 所以默认方案是
+ *          "干脆不关电源"，本函数只作为老行为（SHUT=1）与起收失败时的兜底。
+ *
+ *          刻意 noinline 且不加 __HIGH_CODE：只在主循环的异常路径上跑，校准本身耗时，
+ *          放进 RAM 白占内存（主机 RAM 已 78%）。【注意】绝不能在中断里调用。
+ *
+ * @param   None.
+ * @return  None.
+ */
+static void __attribute__((noinline)) rfRadioRecover( void )
+{
+    RFIP_WakeUpRegInit( );      /* 恢复 LLE/BB 的唤醒寄存器 */
+    RFIP_Calibration( );        /* 射频前端重新校准（耗时，主循环专用） */
+    PRINT("rf recover.\n" );    /* 只在真出问题时打一行，现场据此判断有没有走到这条路 */
+}
+
+/*******************************************************************************
+ * @fn      rfRxStartChecked
+ *
+ * @brief   主循环起收：RFIP_SetRx() 返回非 0（射频不在可收状态）时先 rfRadioRecover()
+ *          再重试一次。把一直丢弃的返回值用起来，避免再次出现"静默变聋"。
+ *
+ *          RFIP_SetRx() 只在"参数指针为空 / rxDMA==0"（= 射频没被初始化过）时才返回
+ *          非 0。走到恢复分支就重新初始化一次；并做 1 秒限速，万一射频真的起不来，
+ *          也不会每圈都跑一遍校准把主循环卡死。起收失败时把 gRfStatus 交回 WAIT，
+ *          让下一圈还能再试（否则会停在 RX 上永远不再起收）。
+ *
+ *          【注意】只能从主循环调（内部可能跑 RFIP_Calibration）；中断里的起收
+ *          （rfProcessTx()）仍然直接用 rf_rx_start()。
+ *
+ * @param   rx_us  接收窗口，单位微秒（与 rf_rx_start() 同一语义）
+ * @return  None.
+ */
+static uint32_t gRadioRecoverTick = 0;          /* 上次射频恢复的时刻（SysTick 计数） */
+
+static void __attribute__((noinline)) rfRxStartChecked( uint32_t rx_us )
+{
+    uint32_t now;
+
+    gRxParam.timeOut = rx_us * 2;               /* 与 rf_rx_start() 同一换算 */
+    if( RFIP_SetRx( &gRxParam ) == 0 )
+    {
+        return;
+    }
+
+    now = SysTick->CNT;
+    if( gRadioRecoverTick && ( (uint32_t)( now - gRadioRecoverTick ) < LedMsToTicks( 1000 ) ) )
+    {
+        gRfStatus = RF_STATUS_WAIT;             /* 限速期内先不动，下一圈再来 */
+        return;
+    }
+    gRadioRecoverTick = now;
+    rfRadioRecover( );
+    gRxParam.timeOut = rx_us * 2;
+    if( RFIP_SetRx( &gRxParam ) != 0 )
+    {
+        gRfStatus = RF_STATUS_WAIT;             /* 恢复后仍起不来：交回主循环重试 */
+    }
+}
+
 /*******************************************************************************
  * @fn      rf_disconnect
  *
@@ -255,11 +344,54 @@ static uint8_t __attribute__((noinline)) rfResendCached( rfPackage_t *pPkt, rfPa
  *
  * @return  None.
  */
+/* 【A/B-3 用】断连后**完整重建射频** = 复刻"上电那条路"：RFRole_Init() → RFRole_BasicInit()
+ * 内含 RFEND_DevInit + RFIP_RegInit（唤醒寄存器 + 前端校准），这正是上电时才会做、而
+ * RFIP_SetRx() 不会补的那一段。
+ *
+ * 为什么要有这一档：实测"拉距断连后只有**重启主机**才能回连"，说明 RFRole_Stop()/Shut()
+ * 之后单靠 RFIP_SetRx() 恢复不了接收，只有完整重建能救回来。
+ *
+ * 【必须补回应用回调】RFRole_Init() 结尾有一句 `pCbs = NULL`（见 rf.c），它清掉的正是
+ * RFRole_RegisterStatusCbs() 注册的那份回调 → 不补的话射频"在收"但没人处理包，
+ * 现象和"聋了"完全一样。所以重建后立刻重新注册。
+ * 重建期间关掉两个射频中断：避免库在半初始化状态被中断重入（RFRole_Init() 结尾会自己
+ * 重新打开，因此这里在它之后再关一次，注册完再开）。 */
+static void __attribute__((noinline)) rfRadioHardReInit( void )
+{
+    PFIC_DisableIRQ( BLEB_IRQn );
+    PFIC_DisableIRQ( BLEL_IRQn );
+    RFRole_Init( );
+    PFIC_DisableIRQ( BLEB_IRQn );       /* RFRole_Init() 内部又打开了，这里再关一次 */
+    PFIC_DisableIRQ( BLEL_IRQn );
+    RFRole_RegisterStatusCbs( &rfCBs ); /* ← 别省：RFRole_Init() 把 pCbs 清成了 NULL */
+    PFIC_EnableIRQ( BLEB_IRQn );
+    PFIC_EnableIRQ( BLEL_IRQn );
+}
+
 static void rf_disconnect( void )
 {
     RF_bound_Flag = 0;
     PRINT("disconnect.\n" );
+#if ( RF_DISCONNECT_SHUT == 1 )
+    /* A/B-1（最早的老行为）：关射频电源。关完**必须**立刻唤醒＋重新校准，否则主机再也
+     * 收不到包 —— 原先只有这一句 RFRole_Shut()，就是"拉距断连后无法回连、只能重启主机"
+     * 的根因。 */
     RFRole_Shut( );
+    rfRadioRecover( );
+#elif ( RF_DISCONNECT_SHUT == 2 )
+    /* A/B-2【最小干预】：断连时**完全不碰射频状态**（不 Stop、不 Shut）—— 与从机的做法
+     * 一致（从机 rf_disconnect() 全工程不调 Stop/Shut，它的回连一直是好的），只把收发参数
+     * 复位回广播值，由主循环的 rfRxStartChecked() 重新起收。 */
+    ( void )0;
+#elif ( RF_DISCONNECT_SHUT == 3 )
+    /* A/B-3【完整重建】：Stop + 复刻上电那条路（见 rfRadioHardReInit 的说明）。 */
+    RFRole_Stop( );
+    rfRadioHardReInit( );
+#else
+    /* A/B-0（当前默认）：只停当前收发，不动射频电源 —— 后续 rfRxStartChecked()/RFIP_SetRx()
+     * 就能正常恢复，不需要重跑初始化。**实测这一档回连不上，仍需重启主机。** */
+    RFRole_Stop( );
+#endif
     gBoundStatus = BOUND_STATUS_IDLE;
     gRxDataStatus = DATA_STATUS_START;
     TMR_ITCfg(DISABLE, TMR_IT_CYC_END); // 关闭中断
@@ -268,6 +400,10 @@ static void rf_disconnect( void )
     rf_tx_set_frequency( DEF_FREQUENCY );
     rf_rx_set_sync_word( AA );
     rf_rx_set_frequency( DEF_FREQUENCY );
+    /* 【回连关键】断开后按"未配对"的方式**连续收包**（gIntervalTimer=0 → RFIP_SetRx 的
+     * timeOut=0 = 不超时、一直听）—— 上电时就是这条（gIntervalTimer 初值 0），而连接期
+     * 是 10ms 窗口。既然"重启主机"能回连，就把断开后的收听方式对齐上电那一档。 */
+    gIntervalTimer = 0;
     gRfStatus = RF_STATUS_WAIT;
     gLastDataRspLen = 0;        /* 重连后序号从 0 起，旧缓存必须作废 */
     /* 【注意】此处不能清 gServerData：断开连接 != 解除绑定。
@@ -869,7 +1005,7 @@ uint8_t RF_RxQuery( void *buf, typeBufSize *len, uint8_t usb_free )
             if( gRfStatus == RF_STATUS_WAIT )
             {
                 gRfStatus = RF_STATUS_RX;
-                rf_rx_start( gIntervalTimer );
+                rfRxStartChecked( gIntervalTimer );     /* 带返回值检查（见函数说明） */
             }
         }
     }
@@ -884,7 +1020,7 @@ uint8_t RF_RxQuery( void *buf, typeBufSize *len, uint8_t usb_free )
         if( gRfStatus == RF_STATUS_WAIT )
         {
             gRfStatus = RF_STATUS_RX;
-            rf_rx_start( gIntervalTimer );
+            rfRxStartChecked( gIntervalTimer );         /* 带返回值检查（见函数说明） */
         }
     }
     return *len;
