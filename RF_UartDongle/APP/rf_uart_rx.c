@@ -96,10 +96,46 @@ static volatile uint16_t gRejCnt    = 0;    /* 配对被拒次数（严格绑定不符 / RSSI
 static volatile uint16_t gRejLocal  = 0;    /* 最近一次被拒时：本机记录的绑定值 */
 static volatile uint16_t gRejRemote = 0;    /* 最近一次被拒时：从机带来的绑定值 */
 static volatile int8_t   gLastRssi  = 0;    /* 最近一次收到的广播 RSSI（配对时看它）*/
+
+/* ---- RSSI 观测（fix3：本轮【只记录、不参与任何判断】，行为与 fix2 完全一致）----------
+ * 为什么需要：RSSI 目前只出现在 rej 行里，成功建链/回连时从来不打印 —— 于是没人知道
+ * "临界距离上抖动"到底发生在多少 dBm，也就没法给重连门限定一个有理有据的值。
+ * 这一版先把两个标定点量出来：
+ *   · join rssi  —— 接受一次建链/回连时的 RSSI   → 用来定 R_JOIN（重连准入门限）
+ *   · rx rssi/min/n —— 连接态逐包采样，给该秒内最差值与包数 → 用来定 R_KEEP（保持门限）
+ * 【纪律】这些量一律只在 ISR 里【赋值】，打印全部放在主循环的 rfDiagReport() 里 ——
+ *        在 ISR 里 PRINT 会把主机拖垮（见下面配对分支的注释）。 */
+static volatile int8_t   gJoinRssi    = 0;   /* 最近一次"接受"BOUND_REQ 时的 RSSI */
+static volatile uint8_t  gJoinRssiNew = 0;   /* 1 = 有新值待打印 */
+static volatile int8_t   gRxRssiLast  = 0;   /* 连接态：最近一包的 RSSI */
+static volatile int8_t   gRxRssiMin   = 0;   /* 连接态：本报告周期内最差 */
+static volatile uint16_t gRxRssiCnt   = 0;   /* 连接态：本报告周期内采样包数 */
+static volatile uint8_t  gJoinGoodCnt  = 0;   /* fix4：连续达标的广播次数（低于门限立刻清零）*/
+static volatile uint8_t  gJoinCooling  = 0;   /* fix4：1 = 掉链冷却期内，暂不接受回连 */
+static volatile uint32_t gJoinCoolTick = 0;   /* fix4：掉链时刻（SysTick 计数）*/
+static uint8_t           gBadQualCnt   = 0;   /* fix5：连续"质量不达标"的秒数（仅主循环用）*/
 extern volatile uint16_t gUsbOvfCnt;        /* 定义在 usb_uart.c：USB OUT 环满次数 */
 /* 定义在 rf.c（两端共用底座，未在 rf.h 里导出）：rfRxStartChecked() 要自己设接收窗口 */
 extern rfipRx_t          gRxParam;
 static uint32_t          gDiagLastTick = 0;
+
+/* ---- 保持侧质量门限（fix5）---------------------------------------------------
+ * 准入门限（上面）保证"信号够好才连"，但**连上之后信号变差它并不会主动断**：
+ * 实测 rssi -70 ~ -83 之间链路能一直撑着不超时，于是出现"显示连着、crc/n 却有 15~25%"
+ * 的链路 —— 按"数据能正常收发"的标准这已经不合格。
+ * 这条补上保持侧：连上后若**丢包率连续超标**就主动断开。断开后准入门限自然拦住重连
+ * （同一条 -52 线），链路停在"未连接"，直到信号恢复。
+ * 判据用实测结果 crc/n 而不是 RSSI —— 它直接对应"数据到底跑不跑得动"。
+ *
+ * 【为什么是 40 而不是 10】曾经取 10（与准入同一条线），台架实测发现**代价太大**：
+ * 断开距离从 fix4 的 -83 缩到 -62 ~ -75（三次实测断点：crc 190/951@-62、
+ * 198/1081@-75、145/963），"能跑但慢"的那一大段可用距离被砍掉了。
+ * 取 40 后：只在链路**真的坏了**才断（实测 -75~-76 才有 40~80% 丢包，物理极限是 -83），
+ * 既恢复了绝大部分可用距离，又仍能挡住"连上却基本没数据"的状态。
+ * 一句话：**准入严格（-52，保证连上就能用），保持宽松（40%，不替用户砍距离）。** */
+#define LINK_QUAL_MAX_PCT   40      /* 丢包率上限（%）：只抓"链路真的坏了"，不砍可用距离 */
+#define LINK_QUAL_BAD_SECS  3       /* 连续超标这么多秒才断（防抖）*/
+#define LINK_QUAL_MIN_PKTS  100     /* 样本太少不判（比值没意义）*/
 
 /*******************************************************************************
  * @fn      rfDiagReport
@@ -123,6 +159,40 @@ static void __attribute__((noinline)) rfDiagReport( void )
         return;
     }
     gDiagLastTick = now;
+    /* ---- fix5 保持侧质量判据 -------------------------------------------------
+     * 必须在下面把 gCrcErrCnt / gRxRssiCnt 清零【之前】抓样本。
+     * 用 nBad/(nGood+nBad) 作为丢包率（crc 错 = 收到但坏了，n = 收到且好的）。
+     * 断开走既有路径：置 DATA_STATUS_TIMEOUT -> 下一次 RF_RxQuery() 调 rf_disconnect()，
+     * 于是冷却 + 准入门限一起生效。
+     * 【注意】若当前有下行数据正等 USB 取走（DATA_STATUS_RCV），先不断 —— 让它送达，
+     *         下一圈再判（要求的是"连续 3 秒超标"，晚一秒无妨），避免丢掉在手数据。 */
+    {
+        uint16_t nGood = gRxRssiCnt;
+        uint16_t nBad  = gCrcErrCnt;
+        uint32_t nTot  = (uint32_t)nGood + nBad;
+
+        if( RF_bound_Flag && nTot >= LINK_QUAL_MIN_PKTS && gRxDataStatus != DATA_STATUS_RCV )
+        {
+            if( (uint32_t)nBad * 100 > nTot * LINK_QUAL_MAX_PCT )
+            {
+                if( ++gBadQualCnt >= LINK_QUAL_BAD_SECS )
+                {
+                    gBadQualCnt = 0;
+                    PRINT( "drop: bad quality crc %u/%u\n", (unsigned)nBad, (unsigned)nTot );
+                    gRxDataStatus = DATA_STATUS_TIMEOUT;
+                }
+            }
+            else
+            {
+                gBadQualCnt = 0;
+            }
+        }
+        else
+        {
+            gBadQualCnt = 0;
+        }
+    }
+
     if( gCrcErrCnt || gRxErrCnt || gUlostCnt || gUsbOvfCnt )
     {
         PRINT( "crc %u rxerr %u ulost %u usbovf %u\n",
@@ -138,6 +208,19 @@ static void __attribute__((noinline)) rfDiagReport( void )
         PRINT( "rej %u local %x remote %x rssi %d\n",
                (unsigned)gRejCnt, (unsigned)gRejLocal, (unsigned)gRejRemote, (int)gLastRssi );
         gRejCnt = 0;
+    }
+    /* ---- RSSI 观测（fix3）：只打印，不影响任何判断 ---- */
+    if( gJoinRssiNew )
+    {
+        PRINT( "join rssi %d\n", (int)gJoinRssi );
+        gJoinRssiNew = 0;
+    }
+    if( gRxRssiCnt )
+    {
+        PRINT( "rx rssi %d min %d n %u\n",
+               (int)gRxRssiLast, (int)gRxRssiMin, (unsigned)gRxRssiCnt );
+        gRxRssiCnt = 0;
+        gRxRssiMin = 0;
     }
 }
 
@@ -267,6 +350,22 @@ static uint8_t __attribute__((noinline)) rfResendCached( rfPackage_t *pPkt, rfPa
 #define RF_DISCONNECT_SHUT   0
 #endif
 
+/* ---- 重连准入的 RSSI 质量门限（fix4）-----------------------------------------
+ * 目标：**只让"数据能正常收发"的信号建链/回连**。
+ * [实测] 连续灌数据、以 crc/n 计丢包率（本对板）：
+ *     rssi ≥ -40 dBm  -> 丢包 ≤ 3%
+ *     rssi ≈ -52 dBm  -> 丢包 ≈ 10%     <== 取这条线
+ *     rssi ≤ -73 dBm  -> 丢包 ≥ 40% 且 n 崩塌（连上也几乎没有数据）-> 抖动的唯一来源
+ * 取 -52 之后：-73 以下那种"接上 300ms 就掉"会被**直接拒绝**，链路停在"未连接"
+ * （LED 快闪），而不是每 300ms 连断一次（PC 端 USB 还会跟着反复枚举）。
+ * [注意] 首次配对那道 `rssi > -58` 语义不同（是"贴近"，用来人工指定连哪一台），
+ *        保持不动。它比本门限松，所以可能出现"配得上、但回连不上" -- 这是有意的：
+ *        那种位置本来就跑不动数据，让用户走近一点比假装连上更诚实。
+ * [日志判读] 被本门限拒时，`rej` 行的 local 与 remote **相等**（身份是匹配的，只是信号差）；
+ *        身份不符才是 local != remote。 */
+#define RSSI_JOIN_MIN       (-52)   /* dBm：低于此值不接受回连（约 10% 丢包线）*/
+#define JOIN_GOOD_N         3       /* 需连续这么多次广播都达标才接受（滤深衰落毛刺）*/
+#define JOIN_COOLDOWN_MS    1000    /* 掉链后冷却，避免在门限附近来回抖 */
 /*******************************************************************************
  * @fn      rfRadioRecover
  *
@@ -356,6 +455,22 @@ static void __attribute__((noinline)) rfRxStartChecked( uint32_t rx_us )
  * 现象和"聋了"完全一样。所以重建后立刻重新注册。
  * 重建期间关掉两个射频中断：避免库在半初始化状态被中断重入（RFRole_Init() 结尾会自己
  * 重新打开，因此这里在它之后再关一次，注册完再开）。 */
+/* 掉链冷却是否仍在生效。只在 ISR（rfProcessRx）里调用；计时用 SysTick，
+ * LedMsToTicks() 已在 rf_uart_rx.h 里声明，任何位置都能调。 */
+static uint8_t rfJoinCooling( void )
+{
+    if( !gJoinCooling )
+    {
+        return 0;
+    }
+    if( (uint32_t)( SysTick->CNT - gJoinCoolTick ) >= LedMsToTicks( JOIN_COOLDOWN_MS ) )
+    {
+        gJoinCooling = 0;               /* 冷却结束 */
+        return 0;
+    }
+    return 1;
+}
+
 static void __attribute__((noinline)) rfRadioHardReInit( void )
 {
     PFIC_DisableIRQ( BLEB_IRQn );
@@ -406,6 +521,12 @@ static void rf_disconnect( void )
     gIntervalTimer = 0;
     gRfStatus = RF_STATUS_WAIT;
     gLastDataRspLen = 0;        /* 重连后序号从 0 起，旧缓存必须作废 */
+    /* 【fix4】进入回连冷却：JOIN_COOLDOWN_MS 内不接受回连，并把"连续达标"计数清零。
+     * 目的：即使信号刚好在门限附近来回飘，也不会每几百毫秒就连断一次。 */
+    gJoinCooling  = 1;
+    gJoinCoolTick = SysTick->CNT;
+    gJoinGoodCnt  = 0;
+    gBadQualCnt   = 0;          /* fix5：新链路重新计数 */
     /* 【注意】此处不能清 gServerData：断开连接 != 解除绑定。
      * 之前每次断开都清零，主机一掉线就"失忆"，任何从机都能重新接上。 */
 }
@@ -472,10 +593,26 @@ static void rfProcessRx( rfPackage_t *pPkt )
         if( pPkt->type == PKT_CMD_BOUND_REQ )
         {
             BOOL reg=0;
+            uint8_t firstPair = 0;      /* 1 = 首次配对（从机 severData==0）：本次才生成新身份 */
             bound_req_t  *pReq_t =  ( bound_req_t  *)(pPkt+1);
             if( pPkt->length == sizeof(bound_req_t) + 2 )
             {
                 int8_t rssi  = *(uint8_t* )((uint8_t* )pPkt + pPkt->length + 2 +2 );
+
+                /* 【fix4 RSSI 质量门限】先更新"连续达标"计数：达标才累加，一掉就清零。
+                 * 用"连续几次"而不是单次读数，是因为 RSSI 有 ±3dB 抖动与深衰落毛刺，
+                 * 单次采样会把"刚好飘上来一下"的弱信号放进链路。 */
+                if( rssi >= RSSI_JOIN_MIN )
+                {
+                    if( gJoinGoodCnt < 255 )
+                    {
+                        gJoinGoodCnt++;
+                    }
+                }
+                else
+                {
+                    gJoinGoodCnt = 0;
+                }
 
                 // 非第一次连接，地址匹配可连
                 if( pReq_t->severData )
@@ -484,7 +621,9 @@ static void rfProcessRx( rfPackage_t *pPkt )
                          * 原实现为 `!gServerData || 相等`，即"本机未绑定就无条件接受"，
                          * 导致任何一台新主机都能接住已绑定的从机。主机绑定已持久化，
                          * 所以去掉该分支不会造成"主机重启后连不上自己的从机"。 */
-                    if( pReq_t->severData == gServerData )
+                    if( pReq_t->severData == gServerData
+                        && gJoinGoodCnt >= JOIN_GOOD_N      /* ② 信号够好（连续达标）*/
+                        && !rfJoinCooling() )               /* ③ 不在掉链冷却期 */
                     {
                         reg = 1;
                     }
@@ -502,6 +641,7 @@ static void rfProcessRx( rfPackage_t *pPkt )
                     if( rssi > -58 )
                     {
                         reg = 1;
+                        firstPair = 1;
                     }
                 }
                 if( reg )
@@ -509,9 +649,31 @@ static void rfProcessRx( rfPackage_t *pPkt )
                     bound_rsp_t *pRsp_t = (bound_rsp_t *)&gTxBuf.TxBuf[PKT_HEAD_LEN];
 
                     gRfStatus = RF_STATUS_TXRSP;
-                    // 生成下次回连的随机信息
                     gDataSeq = 0;
-                    gServerData = rf_rand16( rssi );
+                    /* 【RSSI 观测】记下"在多少 dBm 上接受了这次建链/回连"——
+                     * 这是 R_JOIN（重连准入门限）唯一的标定点。只赋值，不判断、不打印。 */
+                    gJoinRssi    = rssi;
+                    gJoinRssiNew = 1;
+                    /* 【回连时绝不改身份 —— 这才是"拉距断连后永久回连不上"的正解】
+                     * 原实现在这里**无条件** gServerData = rf_rand16(rssi)，而新身份只靠一包
+                     * 可能丢掉的 BOUND_RSP 传达，于是必然出现"两侧绑定值不一致 -> 永久 reject"。
+                     * 两种失败方向都实测到了，说明只要还在"换身份"，分歧就无法根除：
+                     *   · 只改本机、RSP 丢了    -> local 新值 / remote 旧值（local dd28 / remote a2a2）
+                     *   · "提议+成功才提交"一版 -> RSP 送达、从机已落盘，但本机 confirm 没跑到
+                     *                             -> local 旧值 / remote 新值（local 38c2 / remote 9927）
+                     * 正解：**回连（severData 已匹配）时一个字都不动 gServerData**。
+                     * 本机只接受 severData == gServerData 的请求，回的 RSP 里带的也还是
+                     * gServerData -> 从机赋值前后相等。因此无论 RSP 丢没丢、rfBoundConfirm()
+                     * 跑没跑到，两侧永远是同一个值；一次失败只是"再试一次"，不会永久 reject。
+                     * 只有**首次配对**（从机 severData==0）才生成新身份：那条路也没有永久分歧 --
+                     * RSP 丢了从机仍上报 0，永远走上面的 RSSI 分支重新配对。
+                     * 代价：回连沿用原 accessaddr/频点（rf_rand_aa() 是 gServerData 的纯函数），
+                     * 不再每次轮换；对"回连"本就该稳定，反而更可预期。
+                     * 严格绑定的安全性不变：身份不匹配的陌生主机/从机依旧被拒。 */
+                    if( firstPair )
+                    {
+                        gServerData = rf_rand16( rssi );
+                    }
                     /* 【注意】不在此处保存！配对阶段从机会反复广播请求，这里每应答
                      * 一次就生成新值并覆盖 Flash，而主机最终保存的是"最后一次"、
                      * 从机保存的却可能是"更早某一次"，导致两边绑定值不同 -> 永久
@@ -557,6 +719,21 @@ static void rfProcessRx( rfPackage_t *pPkt )
     }
     else
     {
+        /* 【RSSI 观测】连接态逐包采样，供 R_KEEP（保持门限）标定。
+         * 偏移与配对分支完全一致（pPkt->length + 2 + 2）；pPkt->length 是 uint8_t（≤255），
+         * 而 RxBuf 是 264 字节 → 最大下标 259，不会越界。
+         * 同样只赋值、不判断、不打印（打印在主循环里）。 */
+        {
+            int8_t r = *(int8_t *)( (uint8_t *)pPkt + pPkt->length + 2 + 2 );
+
+            gRxRssiLast = r;
+            if( gRxRssiCnt == 0 || r < gRxRssiMin )
+            {
+                gRxRssiMin = r;
+            }
+            gRxRssiCnt++;
+        }
+
         /* 【收到新参数上的第一包 = 真连上了】见 rfBoundConfirm() 的说明 */
         if( !RF_bound_Flag )
         {
@@ -1053,10 +1230,14 @@ uint8_t RF_RxQuery( void *buf, typeBufSize *len, uint8_t usb_free )
  *
  * @return  None.
  */
+/* 固件标识：开机打印，便于从日志一眼确认烧的是哪一版（别再出现"不知道烧的是哪版"） */
+#define RF_FW_TAG   "dongle reconnect-fix6: join>=-52dBm + keep-side crc/n>40%x3s"
+
 __HIGH_CODE
 void RF_UartRxInit( void )
 {
     PRINT("----------------- rf uart rx mode -----------------\n");
+    PRINT("build: %s\n", RF_FW_TAG);
     gRxDataStatus = DATA_STATUS_IDLE;
     rf_buffer_create(&pRfBuf);
     gDataSeq = 0;
