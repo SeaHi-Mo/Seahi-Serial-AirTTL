@@ -595,35 +595,53 @@ static void rfProcessRx( rfPackage_t *pPkt )
                 }
                 else
                 {
-                    s = USB_RxQuery( pRsp_t->other.rspData, &len );
-                    if( s == 0 )
+                    /* 【DTR 极性指令优先】一包只带一个 opcode：先把切换指令发下去（从机收到即
+                     * 改电平 + 写 Flash 掉电保存），下一包再走 BSP 把当前 DTR 电平按新极性重发
+                     * （切极性的那两条路径都会置 UART_Status，见 usb_uart.c）。
+                     * 缓存一份：万一应答丢了、从机按同一 seq 重发，rfResendCached() 会原样重发；
+                     * 从机侧对"极性没变"是幂等的，不会重复擦 Flash。 */
+                    if( gDtrPolPending )
                     {
-                        pPkt_t->length = PKT_DATA_OFFSET+1+len;
-                        pRsp_t->opcode = OPCODE_DATA;
+                        gDtrPolPending = 0;
+                        pPkt_t->length = PKT_DATA_OFFSET+1+1;
+                        pRsp_t->opcode = OPCODE_DTR_POL;
+                        pRsp_t->other.rspData[0] = gDtrPol;
                         pPkt_t->seq = gDataSeq;
                         pPkt_t->resv = 0;
-                        gRfTxCount += len;
-                        rfCacheDownlink( pPkt_t );      /* 缓存，供丢包时重发 */
-                    }
-                    else if( s == 0x80 )
-                    {
-                        // 发送串口波特率
-                        pPkt_t->length = PKT_DATA_OFFSET+1+sizeof(Uart0Para);
-                        pRsp_t->opcode = OPCODE_BSP;
-                        pRsp_t->buad_t.BaudRate = Uart0Para.BaudRate;
-                        pRsp_t->buad_t.StopBits = Uart0Para.StopBits;
-                        pRsp_t->buad_t.ParityType = Uart0Para.ParityType;
-                        pRsp_t->buad_t.DataBits = Uart0Para.DataBits;
-                        pRsp_t->buad_t.ioStaus = Uart0Para.ioStaus;
-                        pPkt_t->seq = gDataSeq;
-                        pPkt_t->resv = 0;
+                        rfCacheDownlink( pPkt_t );
                     }
                     else
                     {
-                        pPkt_t->length = PKT_DATA_OFFSET;
-                        pRsp_t->opcode = OPCODE_ACK;
-                        pPkt_t->seq = gDataSeq;
-                        pPkt_t->resv = 0;
+                        s = USB_RxQuery( pRsp_t->other.rspData, &len );
+                        if( s == 0 )
+                        {
+                            pPkt_t->length = PKT_DATA_OFFSET+1+len;
+                            pRsp_t->opcode = OPCODE_DATA;
+                            pPkt_t->seq = gDataSeq;
+                            pPkt_t->resv = 0;
+                            gRfTxCount += len;
+                            rfCacheDownlink( pPkt_t );      /* 缓存，供丢包时重发 */
+                        }
+                        else if( s == 0x80 )
+                        {
+                            // 发送串口波特率
+                            pPkt_t->length = PKT_DATA_OFFSET+1+sizeof(Uart0Para);
+                            pRsp_t->opcode = OPCODE_BSP;
+                            pRsp_t->buad_t.BaudRate = Uart0Para.BaudRate;
+                            pRsp_t->buad_t.StopBits = Uart0Para.StopBits;
+                            pRsp_t->buad_t.ParityType = Uart0Para.ParityType;
+                            pRsp_t->buad_t.DataBits = Uart0Para.DataBits;
+                            pRsp_t->buad_t.ioStaus = Uart0Para.ioStaus;
+                            pPkt_t->seq = gDataSeq;
+                            pPkt_t->resv = 0;
+                        }
+                        else
+                        {
+                            pPkt_t->length = PKT_DATA_OFFSET;
+                            pRsp_t->opcode = OPCODE_ACK;
+                            pPkt_t->seq = gDataSeq;
+                            pPkt_t->resv = 0;
+                        }
                     }
                 }
                 gDataSeq++;

@@ -63,6 +63,14 @@ extern "C"
 }LINE_CODE, *PLINE_CODE;
 extern LINE_CODE Uart0Para;
 
+/* 【DTR 极性指令】见 rf.h 的 OPCODE_DTR_POL 与 README「修改 DTR 的默认电平」。
+ *   gDtrPol        主机当前要下发给从机的极性：0 = 默认极性，1 = 反相
+ *   gDtrPolPending 有一条极性指令还没下发（usb_uart.c 置位，rf_uart_rx.c 发完清 0）
+ * 主机**不保存**这个值：指令是绝对值，掉电保存在**从机** Flash 里，主机每次上电不需要知道
+ * （所以主机换一台/重上电都不会把从机的设定冲回去）。 */
+extern uint8_t gDtrPol;
+extern uint8_t gDtrPolPending;
+
 void USB_Init( void );
 void USB_StatusQuery( void );
 void USB_DeInit( void );

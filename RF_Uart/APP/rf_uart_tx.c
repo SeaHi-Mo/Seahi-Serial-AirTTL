@@ -32,6 +32,8 @@ static uint8_t  gUnbindBoot = 0;        /* 本次上电刚完成解绑：本轮不配对，让"已
 uint8_t gRfStatus;
 uint8_t gBoundStatus;
 uint8_t getDataProbe;
+/* 【DTR 极性】见 rf_uart_tx.h / OPCODE_DTR_POL。上电由 RF_DtrPolLoad() 从 Flash 读回 */
+volatile uint8_t gDtrPol;
 /* 【环满不确认】从机的 UART 发送环满时，write_buf() 会**整包拒收**。老代码只"计数"、
  * 却仍然走公共尾部 gTxDataSeq++ —— 等于对主机说"这包我收到了"，主机于是不再重发，
  * **这一包下行数据就永久丢了**。2026-10-13 实测这是"下行整包丢 ~50%"的根因：
@@ -92,6 +94,26 @@ static void rf_buffer_create(struct simple_buf **buf)
     *buf = simple_buf_create(&rf_buffer, rf_buf, sizeof(rf_buf) );
 }
 
+/* ===================== 【DTR 极性】 =====================
+ * 语义：0 = 默认（未断言/默认电平 = 高，断言 = 低）、1 = 反相（反过来）。
+ * 掉电保存：写在绑定信息那个 4KB 扇区里（整个扇区重写，由 rfSaveDtrPol() 负责把绑定信息
+ *           原样带回去）。下面两个是给 uart.c 上电初始化用的：UART_Init() 必须先
+ *           RF_DtrPolLoad()，再按 RF_DtrPolGet() 摆 PA3 的上电默认电平。 */
+void RF_DtrPolLoad( void )
+{
+    rfBoundInfo_t *pInfo = (rfBoundInfo_t *)(BOUND_INFO_FLASH_ADDR);
+    uint8_t        pol   = pInfo->dtrPol;
+
+    /* 只有"值 + 按位取反"互补才算有效：老固件写的记录里这两字节是擦除态 0xFF，
+     * 校验不过 -> 默认极性（升级固件不会把老设备的 DTR 变成反相）。 */
+    gDtrPol = ( pInfo->dtrPolChk == (uint8_t)( ~pol ) ) ? ( pol & 1 ) : 0;
+}
+
+uint8_t RF_DtrPolGet( void )
+{
+    return gDtrPol;
+}
+
 #if((defined(DTR_RTS_FUNC)) && (DTR_RTS_FUNC == TRUE))
 /* ===================== 【DTR/RTS 生效规则】 =====================
  * DTR（PA3 -> 目标 BOOT0）与 RTS（PA2 -> 目标 RESET）**故意不同**：
@@ -123,10 +145,43 @@ static volatile uint32_t gRtsPulseTick;     /* 当前阶段的起点（SysTick 计数） */
  * 上电与断链时调用：断链不把目标一直按在复位上。 */
 static void __attribute__((noinline)) rfDtrRtsToDefault( void )
 {
-    GPIOA_SetBits( DTR_PIN | RTS_PIN );
+    /* DTR（PA3）的默认（未断言）电平随极性：默认极性 = 高、反相 = 低。
+     * RTS（PA2）不参与翻转，恒为高 —— 它的语义是"复位脉冲"，翻过来会把烧录时序搞乱。 */
+    if( gDtrPol )   GPIOA_ResetBits( DTR_PIN );
+    else            GPIOA_SetBits( DTR_PIN );
+    GPIOA_SetBits( RTS_PIN );
     gHostRts       = 1;
     gRtsPulseStage = 0;                     /* 丢掉在飞的复位脉冲 */
     gIoPending     = 0;
+}
+
+static void rfSaveDtrPol( void );       /* 定义在文件后部，挨着绑定信息 Flash 读写 */
+
+/* 【DTR 极性】变更请求：ISR（rfProcessRx）只记值 + 置标志，主循环 rfFlushDtrRts() 到期
+ * 改电平并写 Flash —— 擦一个扇区要几毫秒，不能在射频中断里做。 */
+static volatile uint8_t gDtrPolReq;         /* 待生效的极性 */
+static volatile uint8_t gDtrPolReqFlag;     /* ISR 置 1，主循环清 0 */
+
+static void __attribute__((noinline)) rfQueueDtrPol( uint8_t pol )
+{
+    gDtrPolReq     = pol & 1;
+    gDtrPolReqFlag = 1;
+}
+
+/* 生效一次极性变更：改 PA3 电平 + 落 Flash。只有真的变了才擦 Flash（省寿命）。 */
+static void __attribute__((noinline)) rfApplyDtrPol( uint8_t pol )
+{
+    if( pol == gDtrPol )
+    {
+        return;                         /* 没变：不擦 Flash */
+    }
+    gDtrPol = pol;
+    /* 立刻把 PA3 摆到新极性下的"未断言"电平（也就是新的默认电平）。
+     * 若上位机此刻正断言 DTR：主机切极性时会同时置 UART_Status，紧接着那一包 BSP
+     * 会在 10ms 去抖窗口后把 PA3 摆到"断言"电平（见 rfQueueDtrRts）。 */
+    if( gDtrPol )   GPIOA_ResetBits( DTR_PIN );
+    else            GPIOA_SetBits( DTR_PIN );
+    rfSaveDtrPol( );                    /* 掉电保存（与绑定信息同扇区） */
 }
 
 static void __attribute__((noinline)) rfQueueDtrRts( uint8_t ioStaus )
@@ -142,7 +197,16 @@ static void __attribute__((noinline)) rfFlushDtrRts( void )
 {
     uint8_t io;
 
-    /* ① 复位脉冲状态机（只动 PA2，不碰 DTR）：
+    /* ① 【DTR 极性】待生效的极性变更（来自 OPCODE_DTR_POL）：改电平 + 写 Flash 都在这里做，
+     *    不在射频中断里擦 Flash。放在最前面，是为了让"切完极性、紧接着那包 BSP 的 IO 状态"
+     *    按新极性生效。 */
+    if( gDtrPolReqFlag )
+    {
+        gDtrPolReqFlag = 0;
+        rfApplyDtrPol( gDtrPolReq );
+    }
+
+    /* ② 复位脉冲状态机（只动 PA2，不碰 DTR）：
      *    1 = 延迟中（PA2 保持高）-> 到点拉低；
      *    2 = 已拉低 -> **上位机释放了**且低电平已满最短脉宽才回高；
      *        上位机一直按着就一直是低（兼容"按住 RESET"的上位机流程） */
@@ -165,7 +229,7 @@ static void __attribute__((noinline)) rfFlushDtrRts( void )
         }
     }
 
-    /* ② 到期的 IO 状态 */
+    /* ③ 到期的 IO 状态 */
     if( !gIoPending )
     {
         return;
@@ -186,9 +250,10 @@ static void __attribute__((noinline)) rfFlushDtrRts( void )
         return;
     }
 
-    /* DTR（PA3）：纯跟随主机，不自动恢复 */
-    if( io & 0x20 )     GPIOA_SetBits( DTR_PIN );
-    else                GPIOA_ResetBits( DTR_PIN );
+    /* DTR（PA3）：纯跟随主机，不自动恢复；输出电平按极性取反。
+     * ioStaus 的 bit5 = 1 表示"未断言" -> 输出默认电平（默认极性 = 高、反相 = 低） */
+    if( ( ( io & 0x20 ) ? 1 : 0 ) ^ gDtrPol )   GPIOA_SetBits( DTR_PIN );
+    else                                       GPIOA_ResetBits( DTR_PIN );
 
     /* RTS（PA2）：见 uart.h 的 RTS_PULSE_* —— 断言沿触发一次"先延迟、再固定脉宽"的复位脉冲 */
 #if (RTS_PULSE_DELAY_MS == 0) && (RTS_PULSE_LOW_MS == 0)
@@ -569,6 +634,13 @@ static void rfProcessRx( rfPackage_t *pPkt )
 #endif
                 rfApplyLineCode( pRsp_t );      /* 线码真变了才重配（判等在里面；放 Flash 省 RAM） */
             }
+#if((defined(DTR_RTS_FUNC)) && (DTR_RTS_FUNC == TRUE))
+            else if( pRsp_t->opcode == OPCODE_DTR_POL )
+            {
+                /* 【DTR 极性】只记值；改电平 + 写 Flash 交给主循环（见 rfFlushDtrRts） */
+                rfQueueDtrPol( pRsp_t->other.rspData[0] );
+            }
+#endif
             else if( pRsp_t->opcode == OPCODE_DATA )
             {
                 typeBufSize len;
@@ -1091,6 +1163,12 @@ static int rfSaveBoundInfo( rfBoundInfo_t *info )
     int tries;
     int rc = 0;
 
+    /* 【DTR 极性】统一在这里补这两个字段：记录是**整个扇区重写**的，任何一个写点漏填这个
+     * 新字段都会把栈上垃圾写进 Flash（而且 VERIFY 会失败、报 flash op failed）。收口在这里，
+     * 上电计数 / 解绑 / 绑定 / 极性保存四条路径都不用各自记得填。 */
+    info->dtrPol    = gDtrPol;
+    info->dtrPolChk = (uint8_t)( ~gDtrPol );
+
     for( tries = 0; tries < 3; tries++ )
     {
         rc = rfSaveBoundInfoTry( info );
@@ -1105,6 +1183,31 @@ static int rfSaveBoundInfo( rfBoundInfo_t *info )
     PRINT("!!! bound info flash write FAILED (rc=%d)\n", rc);
     rfFlashFailAlarm( );
     return rc;
+}
+
+/*******************************************************************************
+ * @fn      rfSaveDtrPol
+ *
+ * @brief   把当前 DTR 极性落 Flash（掉电保存）。
+ *
+ *          整个 4KB 扇区会被擦掉重写，所以必须先把记录读回来带着写 —— 否则这一擦会把
+ *          绑定信息、连续重启计数一起抹掉。极性那两个字节由 rfSaveBoundInfo() 统一补。
+ *          调用点在主循环（rfFlushDtrRts -> rfApplyDtrPol），不在中断里。
+ *
+ * @param   None.
+ * @return  None.
+ */
+static void __attribute__((noinline)) rfSaveDtrPol( void )
+{
+    rfBoundInfo_t *pInfo = (rfBoundInfo_t *)(BOUND_INFO_FLASH_ADDR);
+    rfBoundInfo_t  info;
+
+    info.head       = pInfo->head;
+    info.serverData = pInfo->serverData;
+    info.bootCount  = pInfo->bootCount;
+    info.resv       = pInfo->resv;
+    rfSaveBoundInfo( &info );
+    PRINT("dtr pol saved:%d\n", gDtrPol);
 }
 
 /*******************************************************************************

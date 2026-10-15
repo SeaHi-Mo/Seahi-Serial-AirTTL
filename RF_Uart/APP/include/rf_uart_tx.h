@@ -41,6 +41,12 @@ extern "C"
 extern uint32_t  gRfRxFlag;
 extern struct simple_buf *pRfBuf;
 
+/* 【DTR 极性（PA3）】0 = 默认（未断言/默认电平 = 高，断言 = 低），1 = 反相（反过来）。
+ * 由 OPCODE_DTR_POL 指令切换，掉电保存在从机 Flash 的绑定信息扇区里。
+ * UART_Init() 先 RF_DtrPolLoad() 再按 RF_DtrPolGet() 决定 PA3 的上电默认电平，
+ * 所以这两个调用必须在配 PA3 之前（顺序见 uart.c 的 UART_Init）。 */
+extern volatile uint8_t  gDtrPol;
+
 /* rf tx status */
 #define   STA_IDLE          0x00
 #define   STA_BUSY          0x01
@@ -48,6 +54,8 @@ extern struct simple_buf *pRfBuf;
 
 void RF_UartTxInit( void );
 void RF_StatusQuery( void );
+void RF_DtrPolLoad( void );
+uint8_t RF_DtrPolGet( void );
 void LedTimerInit( void );
 void LedTimerCalibBegin( void );
 void LedTimerCalibEnd( void );

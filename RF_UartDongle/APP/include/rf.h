@@ -218,6 +218,11 @@ typedef struct
     uint16_t serverData;
     uint16_t bootCount;         /* 连续快速启动计数（见「重启 N 次解绑」） */
     uint16_t resv;              /* 格式标记：等于 BOOT_CNT_MAGIC 时 bootCount 才有效 */
+    /* 【DTR 极性】与绑定信息同扇区持久化（见 OPCODE_DTR_POL）。
+     * dtrPolChk 是 dtrPol 的按位取反，两者互补才认为有效 —— 老固件写的记录里这两个
+     * 字节是擦除态 0xFF（0xFF != ~0xFF），于是老设备升级固件后自动落到默认极性。 */
+    uint8_t  dtrPol;
+    uint8_t  dtrPolChk;
 } __attribute__((aligned(4))) rfBoundInfo_t;   /* Flash 写入要求源缓冲 RAM + 4 字节对齐 */
 
 #define  BOUND_INFO_HEAD         0X55AA
@@ -227,6 +232,11 @@ typedef struct
 /* respond opcode define */
 #define  OPCODE_DATA           0x00
 #define  OPCODE_BSP            0x01
+/* 【DTR 极性】主机 -> 从机（载荷 1 字节，other.rspData[0] 的 bit0）：
+ *   0 = 默认极性（未断言/默认电平 = 高，断言 = 低）
+ *   1 = 反相（未断言/默认电平 = 低，断言 = 高）
+ * 从机收到后立刻改 PA3 电平 + 写 Flash 掉电保存；RTS/PA2 与一键下载时序不受影响。 */
+#define  OPCODE_DTR_POL        0x02
 #define  OPCODE_ACK            0xF0
 
 void rf_tx_set_frequency( uint32_t f );

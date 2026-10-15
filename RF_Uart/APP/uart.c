@@ -287,6 +287,10 @@ int uart_start_receiving(void)
 void UART_Init(void)
 {
     gSysClock = GetSysClock();
+
+    /* 【DTR 极性】必须在下面配 PA3 之前读回：反相时 PA3 的上电默认电平是**低** */
+    RF_DtrPolLoad( );
+
     //设置LED_PIN
 #if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
     GPIOA_ResetBits(LED_PIN);
@@ -295,8 +299,17 @@ void UART_Init(void)
 
 
 // PA2/PA3：DTR/RTS 或 ST 下载的 RESET/BOOT（同一对脚）
-// 都配成推挽输出并默认拉高 = "未断言 / 不复位"，避免上电就把目标按住
+// 都配成推挽输出：PA3(DTR) 的上电默认电平随极性（默认极性 = 高、反相 = 低），
+// PA2(RTS) 恒为高 = "不复位"（RTS 的语义是复位脉冲，不参与极性翻转）。
+// 默认都是"未断言"，避免上电就把目标按住。
+#if((defined(DTR_RTS_FUNC)) && (DTR_RTS_FUNC == TRUE))
+    if( RF_DtrPolGet( ) )   GPIOA_ResetBits( DTR_PIN );     /* 反相：默认电平是低 */
+    else                    GPIOA_SetBits( DTR_PIN );
+    GPIOA_SetBits( RTS_PIN );
+#else
+    /* DTR_RTS_FUNC = FALSE：这两脚只做 ST 一键下载的 BOOT0/RESET，恒默认高，与极性无关 */
     GPIOA_SetBits( (DTR_PIN|RTS_PIN) );
+#endif
     GPIOA_ModeCfg( (DTR_PIN|RTS_PIN), GPIO_ModeOut_PP_5mA);
 
 

@@ -175,6 +175,9 @@ uint8_t UART0_DTR_Val = 0; //输出 数据终端就绪
 uint8_t UART0_OUT_Val = 0; //自定义modem信号（CH340手册）
 
 uint8_t UART_Status;
+/* 【DTR 极性指令】见 usb_uart.h —— 由厂商请求 0xA3 或下行魔数修改，最终下发 OPCODE_DTR_POL */
+uint8_t gDtrPol;
+uint8_t gDtrPolPending;
 
 uint8_t UART0_DCD_Val = 0;
 uint8_t UART0_DCD_Change = 0;
@@ -525,6 +528,24 @@ static uint32_t ch341BpsFromDivisor(uint8_t reg1, uint8_t reg2)
 #define DEF_VEN_I2C_CMD_X               0X54         /* 发出I2C接口的命令,立即执行 */
 #define DEF_VEN_DELAY_MS                0X5E         /* 以亳秒为单位延时指定时间 */
 #define DEF_VEN_GET_VER                 0X5F         /* 获取芯片版本 */
+#define DEF_VEN_DTR_POL                 0XA3         /* 【本项目扩展】设置从机 DTR 极性（wValueL 的 bit0） */
+
+/* 【DTR 极性指令的两条载体】见 rf.h 的 OPCODE_DTR_POL 与 README「修改 DTR 的默认电平」。
+ *   ① 厂商请求 0xA3（wValueL 的 bit0 = 0 默认 / 1 反相）：干净、绝对语义；但 ch341 内核
+ *      驱动占着设备时用户态发不出任意厂商请求，要用 libusb 独占设备才发得出来；
+ *   ② 下行魔数 A5 5A 01 <pol>：任何串口工具 / 面板都能发，代价是这 4 个字节会被吃掉、
+ *      **不会**透传给目标设备。
+ * 两条路都汇总到 gDtrPolPending，由 rf_uart_rx.c 组一包 OPCODE_DTR_POL 发给从机
+ * （从机负责改电平 + 写 Flash 掉电保存）。 */
+#define DTR_POL_MAGIC_0                 0XA5
+#define DTR_POL_MAGIC_1                 0X5A
+#define DTR_POL_MAGIC_2                 0X01
+#define DTR_POL_MAGIC_LEN               4            /* A5 5A 01 <pol>；<pol> 只认 0x00 / 0x01 */
+#define DTR_POL_MAGIC_HOLD              (DTR_POL_MAGIC_LEN-1)   /* 跨包暂存的半截前缀上限 */
+
+/* 魔数过滤的跨包状态（定义在 USB_RxQuery() 前面） */
+static uint8_t  gDtrPolHold[DTR_POL_MAGIC_HOLD];
+static uint8_t  gDtrPolHoldLen;
 
 /* 类请求 */
 //  3.1 Requests---Abstract Control Model
@@ -1061,6 +1082,15 @@ void USB_IRQProcessHandler( void )   /* USB中断服务程序 */
                   Uart0Para.ioStaus = Ep0Buffer[2];
                   UART_Status = 1;
                   PRINT("set moden:%x\r\n",Uart0Para.ioStaus);
+                  break;
+                }
+                case DEF_VEN_DTR_POL:  //【本项目扩展】设置从机 DTR 极性 0XA3
+                {
+                  len = 0;
+                  gDtrPol        = Ep0Buffer[2] & 1;    /* wValueL 的 bit0：0 = 默认极性，1 = 反相 */
+                  gDtrPolPending = 1;
+                  UART_Status    = 1;                   /* 顺带让下一包 BSP 按新极性重发当前 DTR 电平 */
+                  PRINT("set dtr pol:%d\r\n", gDtrPol);
                   break;
                 }
                 case DEF_VEN_BUF_CLEAR: //0XB2  /* 清除未完成的数据 */
@@ -1980,6 +2010,135 @@ void USB_StatusQuery( void )
  }
 
 /*******************************************************************************
+ * @fn      dtrPolMagicFilter
+ *
+ * @brief   【DTR 极性】把下行数据流里的魔数 A5 5A 01 <pol> 就地吃掉（不发给目标设备），
+ *          换成一条空口指令（见 usb_uart.c 顶部的说明）。
+ *
+ *          为什么要"跨包暂存半截前缀"：魔数可能被拆到两次 USB 读取里。最多暂存 3 字节
+ *          （DTR_POL_MAGIC_HOLD），下一包接上再判；**只有当环里确实还有数据待处理
+ *          （keepTail）才暂存** —— 否则这 1~3 个字节要等下一次下行数据才出去，对目标
+ *          设备就是"迟到 + 乱序"，比"指令没认出来"糟糕得多（注释见函数尾部）。
+ *          除了完整命中的那 4 个字节，数据通路完全透明；调用方的缓冲余量由
+ *          USB_RxQuery() 按 gDtrPolHoldLen 预留，过滤后长度不超过 DATA_LEN_MAX_TX。
+ *
+ *          刻意不加 __HIGH_CODE：主机 RAM 宽裕，这里省一点；热路径只多一遍"找 0xA5"
+ *          的单字节扫描（未命中 0xA5 的包不会被就地改写）。
+ *
+ * @param   buf       下行数据（就地过滤）
+ * @param   len       长度
+ * @param   keepTail  环里是否还有待处理的数据（= 半截前缀可以留到下一包再判）
+ * @return  过滤后的长度
+ */
+static typeBufSize dtrPolMagicFilter( uint8_t *buf, typeBufSize len, uint8_t keepTail )
+{
+    static const uint8_t magic[DTR_POL_MAGIC_HOLD] = { DTR_POL_MAGIC_0, DTR_POL_MAGIC_1, DTR_POL_MAGIC_2 };
+    typeBufSize i, o = 0;
+    uint8_t     match = 0;
+    uint8_t     j, c;
+
+    if( gDtrPolHoldLen == 0 )
+    {
+        /* 快路径：没有 0xA5 就不可能是魔数，原样返回、不做任何改写 */
+        for( i = 0; i < len; i++ )
+        {
+            if( buf[i] == DTR_POL_MAGIC_0 )
+            {
+                break;
+            }
+        }
+        if( i >= len )
+        {
+            return len;
+        }
+    }
+
+    /* 先把上一包暂存的半截前缀接回最前面：整体右移 gDtrPolHoldLen 字节再填前缀。
+     * 从后往前搬，避免自己覆盖自己；USB_RxQuery() 读的时候已经按它留了余量。 */
+    if( gDtrPolHoldLen )
+    {
+        for( i = len; i > 0; i-- )
+        {
+            buf[i + gDtrPolHoldLen - 1] = buf[i - 1];
+        }
+        for( i = 0; i < gDtrPolHoldLen; i++ )
+        {
+            buf[i] = gDtrPolHold[i];
+        }
+        len           += gDtrPolHoldLen;
+        gDtrPolHoldLen = 0;
+    }
+
+    for( i = 0; i < len; i++ )
+    {
+        c = buf[i];                             /* 先读走：下面就地压缩会往前写，不会碰到 i */
+
+        if( match >= DTR_POL_MAGIC_HOLD )        /* 前 3 字节已命中，本字节 = 极性参数 */
+        {
+            if( c <= 1 )                         /* 0x00 = 默认极性，0x01 = 反相 */
+            {
+                gDtrPol        = c;
+                gDtrPolPending = 1;
+                UART_Status    = 1;              /* 顺带让下一包 BSP 按新极性重发当前 DTR 电平 */
+                PRINT("dtr pol cmd:%d\r\n", c);
+                match = 0;                       /* 整个魔数被吃掉：不输出 */
+                continue;
+            }
+            /* 参数不像指令：前缀原样吐出去，本字节按普通数据/新前缀处理 */
+            for( j = 0; j < DTR_POL_MAGIC_HOLD; j++ )
+            {
+                buf[o++] = magic[j];
+            }
+            match = 0;
+        }
+        else if( match > 0 )
+        {
+            if( c == magic[match] )
+            {
+                gDtrPolHold[match] = c;          /* 先记下：万一后面没接上要原样吐出去 */
+                match++;
+                continue;                        /* 命中中：先不输出 */
+            }
+            for( j = 0; j < match; j++ )         /* 断了：把欠下的前缀原样吐出去 */
+            {
+                buf[o++] = magic[j];
+            }
+            match = 0;
+        }
+
+        /* 走到这里 match == 0：当前字节要么是新前缀的开头，要么是普通数据 */
+        if( c == magic[0] )
+        {
+            gDtrPolHold[0] = c;
+            match          = 1;
+        }
+        else
+        {
+            buf[o++] = c;
+        }
+    }
+
+    if( keepTail )
+    {
+        gDtrPolHoldLen = match;     /* 后面还有数据待判：半截前缀留到下一包接着判 */
+    }
+    else
+    {
+        /* 环里已经没有待处理的数据了 —— **不能留着**：否则这 1~3 个字节要等下一次下行
+         * 数据才出去（对目标设备就是"迟到 + 乱序"）。这里原样吐回输出流
+         * （它们本来就是这段数据的结尾，就地写不会碰到还没读的字节）。
+         * 代价是"魔数被 USB 读取边界切开、且切开后没有后续数据"时不认这条指令 ——
+         * 上位机把这 4 个字节一次性单独发一遍即可（见 README）。 */
+        for( j = 0; j < match; j++ )
+        {
+            buf[o++] = magic[j];
+        }
+        gDtrPolHoldLen = 0;
+    }
+    return o;
+}
+
+/*******************************************************************************
  * @fn      USB_RxQuery
  *
  * @brief
@@ -2018,8 +2177,13 @@ uint8_t USB_RxQuery( void *buf, typeBufSize *len )
         
         typeBufSize data_len;
 
-        *len = DATA_LEN_MAX_TX;
+        /* 留出"跨包暂存的半截魔数前缀"的余量：过滤后长度可能比读到的多 gDtrPolHoldLen 字节，
+         * 这样最坏情况仍不超过原来的 DATA_LEN_MAX_TX 上限（调用方的缓冲与包长都按它算）。 */
+        *len = DATA_LEN_MAX_TX - gDtrPolHoldLen;
         gEnd2DataLen = read_buf( pUsbBuf,buf,len  );
+        /* 【DTR 极性】魔数拦截（未命中就原样返回）。gEnd2DataLen 是读完这一包后环里
+         * 还剩多少 —— 只有"还剩数据"才允许把半截前缀留到下一包，避免字节被无限期扣住。 */
+        *len = dtrPolMagicFilter( buf, *len, ( gEnd2DataLen != 0 ) ? 1 : 0 );
         if( gEnd2DataLen < (USB_BUF_LEN-MAX_PACKET_SIZE) )
         {
             PFIC_DisableIRQ(USB_IRQn);
