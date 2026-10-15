@@ -31,7 +31,7 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
           submodules: recursive
-          # 发布说明与 Release 标题都要读 tag 注解（annotated tag），显式把 tag 取全
+          # 发布说明的兜底来源要读 tag 注解（annotated tag），显式把 tag 取全
           fetch-tags: true
 
       - name: 解析版本号
@@ -101,6 +101,7 @@ jobs:
           #   ① `.github/release-notes/${TAG}.md` —— 推荐。changelog 跟代码一起走 PR/评审，
           #      也不必把长文本塞进 tag 对象里；
           #   ② tag 注解（annotated tag 的 %(contents)）—— 兜底。轻量 tag 取不到，自动跳过。
+          #      注意：注解**不再**用于 Release 标题（标题只取版本号），只做正文兜底。
           # 【为什么优先用文件】实测在某些受限网络（代理/隧道 MTU 问题）下，推送体积稍大的
           # annotated tag 对象会卡死，而几百字节的注解能推上去 —— 所以让 tag 注解保持一句话，
           # 详细内容放在仓库文件里。
@@ -185,10 +186,11 @@ jobs:
           done
           [ "${MISSING}" -eq 0 ] || { echo "产物不全，终止发布"; exit 1; }
 
-          # ---- 标题：优先用 tag 注解的首行，不要用干巴巴的「$TAG」----
-          # annotated tag 的 %(contents:subject) 就是注解首行；轻量 tag 取不到就退回 $TAG。
-          TITLE="$(git for-each-ref "refs/tags/${TAG}" --format='%(contents:subject)' 2>/dev/null || true)"
-          [ -n "${TITLE}" ] || TITLE="${TAG}"
+          # ---- 标题：**只用版本号本身**（就是 tag 名，如 v1.0.0）----
+          # 【仓库约定】Release 标题 = $TAG：版本列表 / Release 页面上永远只有干净的版本号，
+          # 便于比对；一切描述性文字都放进发布说明正文（优先 .github/release-notes/${TAG}.md）。
+          # 因此**不要**把 changelog 写进 tag 注解去充当标题 —— 注解只作正文的兜底来源。
+          TITLE="${TAG}"
           echo "Release 标题: ${TITLE}"
 
           # ---- 是否标 Latest：tag 推送（= 新版本）总是标；手动触发由输入决定 ----
