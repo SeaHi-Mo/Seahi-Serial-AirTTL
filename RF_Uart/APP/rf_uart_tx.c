@@ -155,12 +155,24 @@ static void __attribute__((noinline)) rfDtrRtsToDefault( void )
     gIoPending     = 0;
 }
 
-static void rfSaveDtrPol( void );       /* 定义在文件后部，挨着绑定信息 Flash 读写 */
+static int  rfSaveDtrPol( void );       /* 定义在文件后部，挨着绑定信息 Flash 读写；返回 rc（0 = 成功）*/
 
 /* 【DTR 极性】变更请求：ISR（rfProcessRx）只记值 + 置标志，主循环 rfFlushDtrRts() 到期
  * 改电平并写 Flash —— 擦一个扇区要几毫秒，不能在射频中断里做。 */
 static volatile uint8_t gDtrPolReq;         /* 待生效的极性 */
 static volatile uint8_t gDtrPolReqFlag;     /* ISR 置 1，主循环清 0 */
+/* 【DTR 极性路径专用】为 1 时，写 Flash 失败不要走那 4 秒阻塞报警。理由见 rfApplyDtrPol()：
+ * 那条路必须尽快复位，不能被报警堵在复位之前（现场实测"发完指令 5~6 秒才重启"）。 */
+static uint8_t gFlashAlarmSuppress = 0;
+
+/* 【fix12 A/B 开关】极性变更后是否自复位。
+ *   1 = 老做法：存完 Flash 立刻 SYS_ResetExecute()（靠重启把运行状态清干净）。
+ *       代价：从机停机 2.7~13 秒（实测波动很大，与 Flash 擦写耗时有关），链路必断一次。
+ *   0 = 只改 PA3 电平 + 落 Flash，**不复位**：极性立刻生效、链路一秒都不空档。
+ *       改电平现在是在射频 ISR 里做的，而"必须重启"本来是给**老的主循环路径**擦屁股用的
+ *       （交接文档 §十三.7：老路径切完极性 LED 异常、串口环卡死）。若这一版复现那些症状，
+ *       把本开关改回 1 即可。 */
+#define DTR_POL_SELF_REBOOT   0
 
 static void __attribute__((noinline)) rfQueueDtrPol( uint8_t pol )
 {
@@ -171,6 +183,8 @@ static void __attribute__((noinline)) rfQueueDtrPol( uint8_t pol )
 /* 生效一次极性变更：改 PA3 电平 + 落 Flash。只有真的变了才擦 Flash（省寿命）。 */
 static void __attribute__((noinline)) rfApplyDtrPol( uint8_t pol )
 {
+    int rc;
+
     if( pol == gDtrPol )
     {
         return;                         /* 没变：不擦 Flash */
@@ -181,7 +195,28 @@ static void __attribute__((noinline)) rfApplyDtrPol( uint8_t pol )
      * 会在 10ms 去抖窗口后把 PA3 摆到"断言"电平（见 rfQueueDtrRts）。 */
     if( gDtrPol )   GPIOA_ResetBits( DTR_PIN );
     else            GPIOA_SetBits( DTR_PIN );
-    rfSaveDtrPol( );                    /* 掉电保存（与绑定信息同扇区） */
+    /* 【掉电保存 —— 但绝不阻塞在此】必须用"抑制 4 秒报警"的方式调：
+     * rfSaveBoundInfo() 在 3 次重试全失败时会走 rfFlashFailAlarm()（20 次 100ms/100ms = 4 秒），
+     * 而下面的 SYS_ResetExecute() 排在它后面 —— 现场表现正是"发完 A5 5A 01 <pol>，
+     * 过 5~6 秒从机才重启"。注意 rc=-3（VERIFY 失败）时数据其实**往往已经写对**，
+     * 所以"极性正确"并不意味着没有触发过这个报警。
+     * 现在改成：失败只用 3 次急促短闪（50ms/50ms，共 ~300ms）标出来 —— 既让人知道
+     * "极性没能存进 Flash"，又不会把复位堵在后面。极性本身已在 RAM 生效、PA3 已摆好。 */
+    gFlashAlarmSuppress = 1;
+    rc = rfSaveDtrPol( );
+    gFlashAlarmSuppress = 0;
+
+#if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
+    if( rc != 0 )
+    {
+        uint8_t i;
+        for( i = 0; i < 3; i++ )
+        {
+            GPIOA_SetBits( LED_PIN );   rfDelayMs( 50 );
+            GPIOA_ResetBits( LED_PIN ); rfDelayMs( 50 );
+        }
+    }
+#endif
 
     /* 【保存完自行重启】极性已落 Flash，重启后由 RF_DtrPolLoad() 从一开始就按新极性摆
      * 上电默认电平，运行状态也一并清干净。现场反馈：切完极性后从机 LED 会异常亮一段、
@@ -189,11 +224,16 @@ static void __attribute__((noinline)) rfApplyDtrPol( uint8_t pol )
      * 代价：链路断一次，主机超时后重新绑定（主机会把 gDataSeq 归零重新同步）。
      * 注意 rfSaveDtrPol() 已把 bootCount 清零，这次主动重启不计入「连重启 5 次解绑」。
      * 幂等：极性没变时本函数在上面就 return 了，所以主机重发同一包 DTR_POL 不会重启第二遍。 */
-    rfDelayMs( 2 );                     /* 只留极小余量让 Flash 写完落定；用户要"收到就直接重启" */
+#if( DTR_POL_SELF_REBOOT )
+    rfDelayMs( 2 );                     /* 只留极小余量让 Flash 写完落定 */
     SYS_ResetExecute( );
     while( 1 )
     {
     }                                   /* 不应返回 */
+#endif
+    /* DTR_POL_SELF_REBOOT == 0：不复位，直接返回。极性已生效（PA3 已摆好）、已落 Flash；
+     * rfProcessRx 继续往下走，这一包照常推进序号（不会再出现"从机离线几秒"的空档）。
+     * 随后主机会因为魔数置起的 UART_Status 再下发一条 BSP，把 DTR 电平按新极性重发一遍。 */
 }
 
 static void __attribute__((noinline)) rfQueueDtrRts( uint8_t ioStaus )
@@ -572,6 +612,26 @@ static void rf_bound( bound_rsp_t *rsp )
 __HIGH_CODE
 static void rfProcessRx( rfPackage_t *pPkt )
 {
+#if((defined(DTR_RTS_FUNC)) && (DTR_RTS_FUNC == TRUE))
+    /* 【fix10：DTR 极性指令提到"序号门"之前处理】
+     * 它是一条**绝对 + 幂等**的指令（值本身就说明目标状态，rfApplyDtrPol 对"没变"直接返回），
+     * 所以重复、迟到、乱序到达都无害 —— 没必要受"数据包"那套序号/重传机制的约束。
+     * 放在门前的收益：主机哪怕是**重发的同一包**（重复 seq）也能立刻生效，从机当场复位，
+     * 主机的重发循环自然结束。原来看法（门后处理）会让主机把这一包无限重发，一路顶到
+     * 破活锁围栏 20000 次 ≈ 6.5 秒 —— 现场"发完 A5 5A 01 <pol>，过 5~6 秒才重启"就是它。
+     * 注意：**不许 return**。极性真的变了时 rfApplyDtrPol() 内部就软复位了（走不到这里）；
+     * 没变时继续往下走正常流程，序号该推进就推进，避免反而把序号卡住。 */
+    if( pPkt->type == PKT_CMD_RSP_STATUS && pPkt->length >= (PKT_DATA_OFFSET+1+1) )
+    {
+        rfRsp_t *pRspPre = (rfRsp_t *)(pPkt+1);
+        if( pRspPre->opcode == OPCODE_DTR_POL )
+        {
+            rfQueueDtrPol( pRspPre->other.rspData[0] );
+            rfApplyDtrPol( pRspPre->other.rspData[0] );
+        }
+    }
+#endif
+
     if( gTxDataSeq == pPkt->seq )
     {
         if( pPkt->type == PKT_DATA_RSP_ACK )
@@ -594,7 +654,11 @@ static void rfProcessRx( rfPackage_t *pPkt )
                     rfRsp_t *pRsp_t = (rfRsp_t *)(pPkt_t+1);
                     len = pPkt_t->length-PKT_DATA_OFFSET-1;
                     gRfRxFlag = write_buf( pRfBuf, pRsp_t->other.rspData, &len );
-                    if( !len )
+                    /* 【fix11】0 字节的 DATA 包不算"环满"：主机侧魔数被 filter 吃掉后会发出这种包，
+                     * 而 write_buf(len=0) 什么都不写、len 保持 0 —— 照旧判 `!len` 会误置
+                     * gRfRxFullHold → 不推进序号 → 主机重发缓存 → 活锁（实测 ~6.5 秒）。
+                     * 只有"本来有数据、却没写进去"才是真环满。 */
+                    if( !len && (pPkt_t->length > PKT_DATA_OFFSET+1) )
                     {
                         gRfRxFullHold = 1;      /* 环满：本包不确认（见 gRfRxFullHold 的说明） */
                         /* 缓冲满：默认丢弃（RF_RX_FULL_BLOCK=0），可选老行为 UART_Send 忙等，
@@ -696,7 +760,11 @@ static void rfProcessRx( rfPackage_t *pPkt )
                     rfRsp_t *pRsp_t = (rfRsp_t *)(pPkt_t+1);
                     len = pPkt_t->length-PKT_DATA_OFFSET-1;
                     gRfRxFlag = write_buf( pRfBuf, pRsp_t->other.rspData, &len );
-                    if( !len )
+                    /* 【fix11】0 字节的 DATA 包不算"环满"：主机侧魔数被 filter 吃掉后会发出这种包，
+                     * 而 write_buf(len=0) 什么都不写、len 保持 0 —— 照旧判 `!len` 会误置
+                     * gRfRxFullHold → 不推进序号 → 主机重发缓存 → 活锁（实测 ~6.5 秒）。
+                     * 只有"本来有数据、却没写进去"才是真环满。 */
+                    if( !len && (pPkt_t->length > PKT_DATA_OFFSET+1) )
                     {
                         gRfRxFullHold = 1;      /* 环满：本包不确认（见 gRfRxFullHold 的说明） */
                         /* 同 ACK 分支：默认丢弃，RF_RX_FULL_BLOCK=1 时为老行为（忙等发完） */
@@ -1137,8 +1205,16 @@ void RF_StatusQuery( void )
 /* Flash 擦写失败报警：刻意**不加** __HIGH_CODE。
  * 调用它时擦写已结束，可以安全执行 Flash 里的代码；放进 RAM 会白占内存
  * （从机 RAM 已到 95%+，96% 即跑不稳）。 */
-static void rfFlashFailAlarm( void )
+/* 【必须 noinline】它会被 rfSaveBoundInfo()（在 .highcode，跑 RAM）调用；内联进去等于
+ * 把 4 秒报警那整段循环搬进 RAM，而从机只剩 600 多字节栈预算。单独一份留在 Flash 里最省。 */
+static void __attribute__((noinline)) rfFlashFailAlarm( void )
 {
+    /* 【DTR 极性路径：不阻塞】见 rfApplyDtrPol()。放在这里而不是调用点，是因为本函数
+     * 刻意不住 .highcode（在 Flash 里），加判断不占从机那几百字节 RAM。 */
+    if( gFlashAlarmSuppress )
+    {
+        return;
+    }
 #if(defined(LED_FUNC)) && (LED_FUNC == TRUE)
     /* 急促闪 20 次（100ms/100ms，共 4 秒）：时长够长、节奏够急，
      * 与"启动慢闪 300/400ms"和"解绑常亮 2 秒"都不会混淆。 */
@@ -1234,10 +1310,11 @@ static int rfSaveBoundInfo( rfBoundInfo_t *info )
  * @param   None.
  * @return  None.
  */
-static void __attribute__((noinline)) rfSaveDtrPol( void )
+static int __attribute__((noinline)) rfSaveDtrPol( void )
 {
     rfBoundInfo_t *pInfo = (rfBoundInfo_t *)(BOUND_INFO_FLASH_ADDR);
     rfBoundInfo_t  info;
+    int rc;
 
     info.head       = pInfo->head;
     info.serverData = pInfo->serverData;
@@ -1248,8 +1325,9 @@ static void __attribute__((noinline)) rfSaveDtrPol( void )
      * resv 一并写成魔数：确保下次上电 bootCount 被当成"有效且为 0"读回。 */
     info.bootCount  = 0;
     info.resv       = BOOT_CNT_MAGIC;
-    rfSaveBoundInfo( &info );
+    rc = rfSaveBoundInfo( &info );
     PRINT("dtr pol saved:%d\n", gDtrPol);
+    return rc;
 }
 
 /*******************************************************************************

@@ -44,13 +44,27 @@ __HIGH_CODE
 static void rfSaveServerData( void )
 {
     rfBoundInfo_t info;
+    uint32_t      irqSta;
 
     info.head       = 0x55aa;
     info.serverData = gServerData;
     info.bootCount  = 0;
     info.resv       = 0;
+    /* ¡¾fix11d ¡ïÖ÷»úÎªÊ²Ã´»á×Ô¼º¸´Î»¡¿±¾º¯ÊıÅÜÔÚ**ÉäÆµ ISR ÄÚ**£¨rfBoundConfirm ¡û rfProcessRx£©£¬
+     * ¶ø Flash ²ÁĞ´ÆÚ¼ä CPU È¡Ö¸ÊÜÏŞ£º´Ë¿ÌÖ»ÒªÓĞ**±ğµÄ**ÖĞ¶Ï½øÀ´£¨USB / µ÷ÊÔ´®¿Ú / ¶¨Ê±Æ÷¡­£©£¬
+     * ¶øËüµÄ ISR »òµ÷ÓÃÁ´ÉÏÓĞÈÎºÎ**×¤Áô Flash** µÄ´úÂë£¬È¡Ö¸¾Í»áÊ§°Ü ¡ú ÅÜ·É/¸´Î»¡£
+     * ÏÖ³¡±íÏÖ£ºÃ¿´ÎÖØĞÂ½¨Á´£¨bound success = ÕâÀïĞ´ Flash£©Ö®ºóµÄ¼¸ÃëÄÚ£¬Ö÷»úÕûÆ¬¸´Î»¡¢
+     * PC ÉÏ´®¿ÚÏûÊ§²¢ÖØĞÂÃ¶¾Ù ¡ª¡ª ¾ÍÊÇÓÃ»§ËµµÄ"Ö÷»úÊ¶±ğ¶Ï¿ªºó»áÈ¡Ïû USB Ã¶¾Ù"¡£
+     * ÈÕÖ¾ÊµÖ¤£º21:36:51 Óë 21:24:48 Á½´Î¶¼ÔÚ bound success µÄÍ¬Ò»Ãë/´ÎÃë³öÏÖÍêÕû¿ª»úĞòÁĞ
+     * £¨CH57x_RF_BASIC_LIB ¡ú rf uart rx mode ¡ú build: ¡ú SET_ADDRESS/SET_CONFIGURATION£©£¬
+     * ¶øÖ÷»ú¹¤³ÌÀï¼ÈÃ»ÓĞ SYS_ResetExecute Ò²Ã»ÓĞ¿´ÃÅ¹·£¬RF_UartRxInit() Ö»ÔÚ main() Àïµ÷ ¡ª¡ª
+     * Ö»ÄÜÊÇÅÜ·Éºó±»¸´Î»¡£¸ÅÂÊĞÔ´¥·¢£¨21:30 ÄÇ´Î½¨Á´¾ÍÃ»ÖĞ£©¡£
+     * ´Ó»úµÄËÄÌõĞ´Â·¾¶£¨rfSaveBoundInfoTry£©Ôç¾ÍÓĞÕâ²ã±£»¤£¬Ö÷»úÕâÌõÒ»Ö±Â©ÁË¡£
+     * SYS_ °æ»á±£´æ/»Ö¸´ÖĞ¶ÏÊ¹ÄÜ×´Ì¬£¬¿ÉÇ¶Ì×¡¢²»»áÎó¿ª±¾À´¹Ø×ÅµÄÖĞ¶Ï£»²ÁĞ´Ö»ÓĞ¼¸ºÁÃë¡£ */
+    SYS_DisableAllIrq( &irqSta );
     FLASH_ROM_ERASE( BOUND_INFO_FLASH_ADDR, 4096 );
     FLASH_ROM_WRITE( BOUND_INFO_FLASH_ADDR, &info, sizeof(info) );
+    SYS_RecoverIrq( irqSta );
 }
 
 static void rfLoadServerData( void )
@@ -130,6 +144,44 @@ static volatile uint8_t  gJoinGoodCnt  = 0;   /* fix4£ºÁ¬Ğø´ï±êµÄ¹ã²¥´ÎÊı£¨µÍÓÚÃ
 static volatile uint8_t  gJoinCooling  = 0;   /* fix4£º1 = µôÁ´ÀäÈ´ÆÚÄÚ£¬Ôİ²»½ÓÊÜ»ØÁ¬ */
 static volatile uint32_t gJoinCoolTick = 0;   /* fix4£ºµôÁ´Ê±¿Ì£¨SysTick ¼ÆÊı£©*/
 static uint8_t           gBadQualCnt   = 0;   /* fix5£ºÁ¬Ğø"ÖÊÁ¿²»´ï±ê"µÄÃëÊı£¨½öÖ÷Ñ­»·ÓÃ£©*/
+/* ---- ¡¾B' ´Ó»úÖØÆô¿íÏŞ´°¿Ú¡¿ÇĞ DTR ¼«ĞÔÊ±£¬Ö÷»ú²»ÄÜµôÁ´£¨USB ²»ÄÜÖØĞÂÃ¶¾Ù£©------------
+ * ±³¾°£º´Ó»úÊÕµ½ OPCODE_DTR_POL ºó»áÔÚÉäÆµ ISR Àï´æ Flash ²¢**Á¢¿ÌÈí¸´Î»**£¨È¨ÒË½â£¬¼û½»½Ó
+ * ÎÄµµ ¡ìÊ®Èı£©¡£ËüÒ»¸´Î»¾Íµô³öÁ´Â·£¨gTxDataSeq=0¡¢gBoundStatus=0£¬Ö»·¢ BOUND_REQ£©£¬Ö÷»úÕâ±ß£º
+ *   ¢Ù ¸Ã BOUND_REQ ÎŞÈËÈÏÁì£¨Ö»ÔÚ gBoundStatus==IDLE Ê±²Å´¦Àí£©¡ú Âäµ½°üµÄ else ·ÖÖ§
+ *      gRxErrCnt++ ÇÒ gTimeout++£»¢Ú rfProcessTimeout() Ò²ÔÚ gTimeout++ ¡ª¡ª Ô¼ 1~2 Ãëºó
+ *      gTimeout ³¬¹ı gTimeoutMax ¡ú DATA_STATUS_TIMEOUT ¡ú rf_disconnect() ¡ú RF_bound_Flag=0£»
+ *   ¢Û ÔÙµş¼Ó LINK_DEBOUNCE_MS(3000ms) È¥¶¶ ¡ú gLinkStable=0 ¡ú process_main() µ÷ USB_DeInit()
+ *      ¡ú PC ÉÏ´®¿ÚÏûÊ§¡¢ÖØĞÂÃ¶¾Ù¡£**Õâ¾ÍÊÇÏÖ³¡"·¢Íê¼«ĞÔÖ¸Áî 3~5 Ãëºó´®¿ÚÃ»ÁË"µÄÀ´Ô´¡£**
+ * ´¦Àí£ºÖ÷»ú×Ô¼º¸ÕÏÂ·¢¹ı¼«ĞÔÖ¸Áî£¬Ëü±¾À´¾ÍÖªµÀ½ÓÏÂÀ´´Ó»ú»áÏûÊ§£¬ËùÒÔ¿ªÒ»¸ö¿íÏŞ´°¿Ú£º
+ *   ¢Ù ´°¿ÚÄÚ²»ÀÛ¼Ó gTimeout£¨RF_bound_Flag / gLinkStable È«³Ì²»¶¯ ¡ú USB ²»¶¯£©£»
+ *   ¢Ú ´°¿ÚÄÚÊÕµ½ BOUND_REQ Ö±½Óµ±"´Ó»ú»ØÀ´ÁË"£¬×ß¿ìËÙÖØÁ¬£¨gDataSeq ¹éÁã + ÖØ·¢ BOUND_RSP£©£»
+ *   ¢Û ´°¿Úµ½µã»¹Ã»»ØÀ´ ¡ú »Ö¸´Ô­ÓĞ³¬Ê±Âß¼­£¨±£»¤²»Ï÷Èõ£º´Ó»úÕæ»µ/±»°ÎÕÕ¾É»á¶Ï¿ª£©¡£
+ * Ö»¸ÄÖ÷»ú£º´Ó»ú²àÒ»ĞĞ¶¼²»ÓÃ¶¯£¬Òò´Ë¿ÉÒÔ**Ö»ÉÕÖ÷»ú**ÑéÖ¤¡£ */
+/* ´°¿Ú³¤¶È£ºÖ»Ğè¸²¸Ç"´Ó»ú¸´Î» -> ÖØĞÂ¹ã²¥ -> Ö÷»ú½Ó×¡"ÕâÒ»¶Î£¨**°´´úÂë¹ÀËã£¬´ıÌ¨¼ÜÊµ²âÈ·ÈÏ**£©£º
+ *   rfDelayMs(2) + CPU ¸´Î»ÓëÆô¶¯¿½±´ + RFRole_Init() ÉäÆµ³õÊ¼»¯/Ç°¶ËĞ£×¼£¨¼¸Ê® ms£©
+ *   + LedTimerInit()£¨mDelaymS(10) ÔÚ 24MHz µµÕæÊµÔ¼ 42ms£©
+ *   + rfBootCountStartup() µÄ LED Æô¶¯¶ÌÉÁ£¨gBootCount ´Î ¡Á 350ms£»¼«ĞÔÖØÆôÇ° bootCount ÒÑ±»
+ *     rfSaveDtrPol() ÇåÁã ¡ú 1 ´Î ¡Ö 350ms£¬ÕâÊÇÆô¶¯Â·¾¶Àï×î´óµÄÒ»¿é£©
+ *   + ¹ã²¥ÎÕÊÖ ¡Ö100ms£¨20ms ¹ã²¥ + Á¬Ğø 3 °ü´ï±ê + RSP + Ê×°ü£©
+ *   ºÏ¼ÆÔ¼ 0.5~0.8s¡£È¡ 2s ÊÇ 2~3 ±¶ÓàÁ¿¡£
+ * ¡¾ÖØÒª¡¿Êµ¼ÊÖØÁ¬Ê±¿Ì**ÓÉ´Ó»ú¾ö¶¨**£ºËüµÄµÚÒ»¸ö BOUND_REQ Ò»µ½¾ÍÖØÁ¬£¬´°¿Ú³¤¶ÌÖ»ÊÇ"×î¶à
+ * ÈİÈÌ¶à¾ÃÃ»ÏûÏ¢"£¬**²»Ôö¼ÓÑÓ³Ù**£»´°¿Úµ½µãÈÔÎ´»ØÀ´²Å×ßÔ­ÓĞ³¬Ê±Âß¼­¡£ */
+#define  DTRPOL_REPEAT_N      4                     /* ¼«ĞÔÖ¸ÁîÔÚĞÂĞòºÅÉÏÁ¬·¢¼¸´Î£¨ÃİµÈ£¬¶ªÒ»Á½´ÎÎŞ·Á£©*/
+static uint8_t  gDtrPolRepeat    = 0;               /* >0 = »¹ÒªÔÙ·¢¼¸´Î¼«ĞÔÖ¸Áî */
+/* ¡¾Êµ²âĞ£×¼ 2026-10-15¡¿Ô­Éè 2000ms **²»¹»**£ºÌ¨¼ÜÊµ²â´Ó»ú"ÊÕµ½¼«ĞÔÖ¸Áî¡ú´æ Flash¡ú¸´Î»¡ú
+ * ÖØĞÂ¹ã²¥»ØÀ´"Òª ~2.7s£¨ÈÕÖ¾£ºdtr pol cmd ºó +2.7s ²ÅÊÕµ½ËüµÄ BOUND_REQ£©£¬
+ * 2s ´°¿Ú¸ÕºÃ´í¹ı ¡ú Ö÷»úÈÔ×ß rf_disconnect() ¡ú USB ÖØÃ¶¾Ù¡£·Åµ½ 6s ÓĞ 2 ±¶ÓàÁ¿¡£
+ * ´ú¼Û£ºÈô´Ó»úÕæµÄµôµç/»µÁË£¬Ö÷»ú×î¶à¶àµÈ 6s ²ÅÅĞ¶¨¶Ï¿ª£¨Ö®ºóÕÕ¾É 3s È¥¶¶£©¡£ */
+/* ¡¾2026-10-15 ´Ó 12000 ÊÕ»Ø 2000¡¿12000 ÊÇÎªÁË¶µ×¡"´Ó»úÊÕµ½¼«ĞÔÖ¸Áîºó×Ô¸´Î»¡¢
+ * Í£»ú 2.7~13 Ãë"ÄÇ¶Î¿Õµµ¡£ÏÖÔÚ´Ó»ú²à DTR_POL_SELF_REBOOT=0£¨Ö»¸ÄµçÆ½²»¸´Î»£¬
+ * Á´Â·ÁãÖĞ¶Ï£¬Ì¨¼ÜÊµ²â£©£¬´°¿ÚÖ»Ê£"ÍòÒ»¶¶¶¯±ğ¼±×Å²ğÁ´"ÕâµãÓàÁ¿¡£
+ * ÁôÌ«´ó·´¶øÓĞº¦£º´°¿ÚÄÚ gTimeout ±»ÇåÁã£¬Õæ×ßÔ¶ÁËÒ²»á±»ÍÆ³ÙÅĞ³¬Ê±£¨Êµ²â 12 Ãë´°¿Ú
+ * »á°Ñ¶ÏÁ´ÅĞ¶¨ÕûÌåÍÆºó£©£¬Óë LINK_DEBOUNCE_MS µ÷Ğ¡µÄÄ¿±êÖ±½Ó³åÍ»¡£
+ * 7²2„1‚5 Èô°Ñ´Ó»ú¸Ä»Ø×Ô¸´Î»ÄÇÒ»µµ£¬±¾Öµ±ØĞëµ÷»Ø 12000£¨·ñÔò´Ó»ú»¹Ã»»ØÀ´¾Í±»ÅĞ¶Ï¿ª£©¡£ */
+#define  DTRPOL_GRACE_MS      2000
+static uint8_t  gDtrPolGrace     = 0;               /* 1 = ¸ÕÏÂ·¢¼«ĞÔÖ¸Áî£¬´¦ÓÚ¿íÏŞÆÚ */
+static uint32_t gDtrPolGraceTick = 0;               /* ÏÂ·¢Ê±¿Ì£¨SysTick ¼ÆÊı£©*/
+
 extern volatile uint16_t gUsbOvfCnt;        /* ¶¨ÒåÔÚ usb_uart.c£ºUSB OUT »·Âú´ÎÊı */
 extern volatile uint16_t gUsbRxCnt;         /* ¶¨ÒåÔÚ usb_uart.c£º±¾ÖÜÆÚ USB ÊÕµ½µÄÔ­Ê¼×Ö½ÚÊı */
 /* ¶¨ÒåÔÚ rf.c£¨Á½¶Ë¹²ÓÃµ××ù£¬Î´ÔÚ rf.h Àïµ¼³ö£©£ºrfRxStartChecked() Òª×Ô¼ºÉè½ÓÊÕ´°¿Ú */
@@ -511,6 +563,25 @@ static uint8_t rfJoinCooling( void )
     return 1;
 }
 
+/* ¡¾B'¡¿DTR ¼«ĞÔÖ¸ÁîÏÂ·¢ºóµÄ"´Ó»úÖØÆô¿íÏŞ´°¿Ú"ÊÇ·ñÈÔÔÚÉúĞ§¡£
+ * ¡¾ÎªÊ²Ã´Ğ´³Éº¯Êı¶ø²»ÊÇºê¡¿ºê»áÔÚ rfProcessRx / rfProcessTimeout Àï¸÷Õ¹¿ªÒ»·İ£¬¶øÕâÁ½¸ö
+ * º¯Êı¶¼ÊÇ __HIGH_CODE£¨´úÂëÔÚ RAM£©¡ª¡ª Èı´¦Õ¹¿ªµÈÓÚ°×Õ¼Ô¼ 300 B RAM£¨Êµ²â 90.17%¡ú92.61%£©¡£
+ * Ğ´³ÉÆÕÍ¨ static º¯Êı¼´¿É£ºµ÷ÓÃµãÖ»ÓĞÒ»Ìõ call£¬º¯ÊıÌåÁôÔÚ Flash Àï¡£
+ * Óë rfJoinCooling() ÍêÈ«Í¬Ò»Ì×Â·£¨Í¬ÑùÊÇ ISR µ÷ÓÃ¡¢Í¬ÑùÓÃ LedMsToTicks ¼ÆÊ±£©¡£ */
+static uint8_t rfDtrPolGraceActive( void )
+{
+    if( !gDtrPolGrace )
+    {
+        return 0;
+    }
+    if( (uint32_t)( SysTick->CNT - gDtrPolGraceTick ) < LedMsToTicks( DTRPOL_GRACE_MS ) )
+    {
+        return 1;
+    }
+    gDtrPolGrace = 0;                   /* ´°¿ÚÒÑ¹ı£ºÖÃ»Ø 0£¬ºóÃæ×ßÔ­ÓĞ³¬Ê±Âß¼­ */
+    return 0;
+}
+
 static void __attribute__((noinline)) rfRadioHardReInit( void )
 {
     PFIC_DisableIRQ( BLEB_IRQn );
@@ -628,7 +699,11 @@ static void rfProcessRx( rfPackage_t *pPkt )
 {
     rfPackage_t *pPkt_t = (rfPackage_t *)gTxBuf.TxBuf;
 
-    if( gBoundStatus == BOUND_STATUS_IDLE )
+    /* ¡¾B'¡¿¿íÏŞÆÚÄÚ¼´Ê¹ÒÑ¾­ EST/WAIT Ò²ÔÊĞí´¦Àí BOUND_REQ ¡ª¡ª ÄÇÊÇ"´Ó»úÖØÆô»ØÀ´ÁË"¡£
+     * ×¢Òâ±ØĞëÏŞ¶¨°üÀàĞÍ£º·ñÔò´Ó»úÕı³£ÂÖÑ¯µÄ GET_STATUS Ò²»á±»ÕâÀï³Ôµô¡¢×ß²»µ½ÏÂÃæµÄ
+     * Á¬½ÓÌ¬·ÖÖ§£¨ÄÇ»á°ÑÕı³£Á´Â·¸ã»µ£©¡£ */
+    if( gBoundStatus == BOUND_STATUS_IDLE
+        || ( pPkt->type == PKT_CMD_BOUND_REQ && rfDtrPolGraceActive() ) )
     {
         if( pPkt->type == PKT_CMD_BOUND_REQ )
         {
@@ -688,6 +763,12 @@ static void rfProcessRx( rfPackage_t *pPkt )
                 {
                     bound_rsp_t *pRsp_t = (bound_rsp_t *)&gTxBuf.TxBuf[PKT_HEAD_LEN];
 
+                    if( gBoundStatus != BOUND_STATUS_IDLE )
+                    {
+                        /* Ö»ÔÚÕâÌõ B' ¿ìËÙÖØÁ¬Â·ÉÏ³öÏÖ£¨Õı³£Åä¶Ô/»ØÁ¬Ê± gBoundStatus ÊÇ IDLE£©¡£
+                         * Ò»´ÎĞÔÊÂ¼ş£¬Óë rf_bound() ÀïÄÇ¾ä "bound rsp sent" Í¬Àà£¬²»¹¹³ÉË¢ÆÁ¡£*/
+                        PRINT("dtr pol grace: slave back, fast relink.\n");
+                    }
                     gRfStatus = RF_STATUS_TXRSP;
                     gDataSeq = 0;
                     /* ¡¾RSSI ¹Û²â¡¿¼ÇÏÂ"ÔÚ¶àÉÙ dBm ÉÏ½ÓÊÜÁËÕâ´Î½¨Á´/»ØÁ¬"¡ª¡ª
@@ -817,20 +898,55 @@ static void rfProcessRx( rfPackage_t *pPkt )
                      * £¨ÇĞ¼«ĞÔµÄÄÇÁ½ÌõÂ·¾¶¶¼»áÖÃ UART_Status£¬¼û usb_uart.c£©¡£
                      * »º´æÒ»·İ£ºÍòÒ»Ó¦´ğ¶ªÁË¡¢´Ó»ú°´Í¬Ò» seq ÖØ·¢£¬rfResendCached() »áÔ­ÑùÖØ·¢£»
                      * ´Ó»ú²à¶Ô"¼«ĞÔÃ»±ä"ÊÇÃİµÈµÄ£¬²»»áÖØ¸´²Á Flash¡£ */
-                    if( gDtrPolPending )
+                    /* ¡¾fix10£º¼«ĞÔÖ¸Áî²»ÔÙ½øÏÂĞĞ»º´æ£¬¸Ä³É"Á¬·¢ N ´Î"¡¿
+                     * Ô­À´ÕâÀïµ÷ rfCacheDownlink()£¬ÓÚÊÇ´Ó»úÒ»µ©Ã»È·ÈÏ£¬Ö÷»úµÄ"ÖØ¸´ seq"·ÖÖ§¾Í»á
+                     * °ÑÕâÒ»°ü**ÎŞÏŞÖØ·¢**£¨Êµ²â dup¡Örtx¡Ö3300 ´Î/Ãë£©£¬Ò»Â·¶¥µ½ÆÆ»îËøÎ§À¸
+                     * LINK_RESEND_GIVEUP_N=20000 ²ÅÍ£ ¡ª¡ª Ô¼ 6.5 Ãë£»¶ø¼«ĞÔÒªµÈÎ§À¸Ö®ºó²ÅÉúĞ§£¬
+                     * ÏÖ³¡¾ÍÊÇ"·¢ÍêÖ¸Áî 5~6 Ãë´Ó»ú²ÅÖØÆô"¡£ÈÕÖ¾ÊµÖ¤£ºÃ¿´Î dtr pol cmd Ö®ºó
+                     * ÕıºÃ +6.5s ³öÏÖ giveup 1£¬ÇÒÆÚ¼ä rxerr 0£¨´Ó»ú¸ù±¾Ã»ÖØÆô£©¡£
+                     * ¼«ĞÔÊÇ**¾ø¶ÔÖµ + ÃİµÈ**Ö¸Áî£¨´Ó»ú rfApplyDtrPol ¶Ô"Ã»±ä"Ö±½Ó·µ»Ø£©£¬
+                     * ²»ĞèÒª¿¿ÖØ´«À´±£Ö¤ËÍ´ï£º¸Ä³ÉÔÚĞÂĞòºÅÉÏ**Á¬·¢ DTRPOL_REPEAT_N ´Î**£¬
+                     * ¶ø"ÖØ¸´ seq"·ÖÖ§»Ö¸´³É»Ø¿Õ ACK ¡ª¡ª ´Ó»ú¾ÍÄÜÕı³£ÍÆ½øĞòºÅ£¬²»»áÔÙ»îËø¡£ */
+                    if( gDtrPolPending || gDtrPolRepeat )
                     {
-                        gDtrPolPending = 0;
+                        if( gDtrPolPending )
+                        {
+                            gDtrPolPending = 0;
+                            gDtrPolRepeat  = DTRPOL_REPEAT_N;
+                        }
+                        gDtrPolRepeat--;
                         pPkt_t->length = PKT_DATA_OFFSET+1+1;
                         pRsp_t->opcode = OPCODE_DTR_POL;
                         pRsp_t->other.rspData[0] = gDtrPol;
                         pPkt_t->seq = gDataSeq;
                         pPkt_t->resv = 0;
-                        rfCacheDownlink( pPkt_t );
+                        /* ¡¾B'¡¿´ÓÕâÀï¿ªÊ¼½øÈë¿íÏŞÆÚ£º´Ó»úÊÕµ½Õâ°ü¾Í»á´æ Flash ²¢Èí¸´Î»¡£
+                         * Ä¿µÄÖ»ÓĞÒ»¸ö£º±ğÈÃ USB_DeInit() ·¢Éú£¨PC ÉÏµÄ´®¿Ú²»ÄÜÏûÊ§£©¡£*/
+                        gDtrPolGrace     = 1;
+                        gDtrPolGraceTick = SysTick->CNT;
+                        gTimeout         = 0;
                     }
                     else
                     {
                         s = USB_RxQuery( pRsp_t->other.rspData, &len );
-                        if( s == 0 )
+                        /* ¡¾fix11 ¡ïÏÖ³¡"5~6 Ãë²ÅÖØÆô"µÄ¸ùÒò¡¿Ä§Êı±» dtrPolMagicFilter() ¾ÍµØ³Ôµôºó£¬
+                         * USB_RxQuery() ÈÔ·µ»Ø"³É¹¦µ« 0 ×Ö½Ú"¡£Ô­À´ÕâÀï²»¿´ len£¬ÓÚÊÇ·¢³ö£¨²¢»º´æ£©
+                         * Ò»¸ö **0 ×Ö½ÚµÄ DATA °ü**£»¶ø´Ó»úµÄ write_buf(len=0) Ò»¸ö×Ö½Ú¶¼²»Ğ´¡¢
+                         * *len ÈÔÊÇ 0£¬ËüÈ´ÓÃ `if(!len)` ÅĞ¶¨"»·Âú" ¡ú gRfRxFullHold=1 ¡ú
+                         * **²»ÍÆ½ø gTxDataSeq**£»Ö÷»úÓÖ°ÑÕâÒ»°ü»º´æ×Å·´¸´ÖØ·¢ ¡ú »îËø£¬
+                         * Ò»Â·¶¥µ½ÆÆ»îËøÎ§À¸ LINK_RESEND_GIVEUP_N=20000£¨¡Ö6.5 Ãë£©²Å½â¿ª¡£
+                         * Êµ²âÈÕÖ¾£ºdtr pol cmd Ö®ºó 0.7s Æğ dup¡Örtx¡Ö3200/Ãë¡¢rxerr 0¡¢
+                         * ´Ó»úÈ«³Ì²»ÖØÆô£¨LED ºãÁÁÊÇÒòÎªËüÒ»Ö±ÔÚÊÕÕâ¸ö DATA °ü£©£¬
+                         * +6.5s ³öÏÖ giveup 1£¬¼«ĞÔÒªµÈÎ§À¸Ö®ºó²ÅÉúĞ§¡£
+                         * 0 ×Ö½Ú = Ã»Êı¾İ£º»Ø¿Õ ACK£¬ÈÃ´Ó»úÕı³£ÍÆ½øĞòºÅ¼´¿É¡£ */
+                        if( s == 0 && len == 0 )
+                        {
+                            pPkt_t->length = PKT_DATA_OFFSET;
+                            pRsp_t->opcode = OPCODE_ACK;
+                            pPkt_t->seq = gDataSeq;
+                            pPkt_t->resv = 0;
+                        }
+                        else if( s == 0 )
                         {
                             pPkt_t->length = PKT_DATA_OFFSET+1+len;
                             pRsp_t->opcode = OPCODE_DATA;
@@ -949,7 +1065,13 @@ static void rfProcessRx( rfPackage_t *pPkt )
         else
         {
             gRxErrCnt++;        /* Ö»¼ÆÊı£ºÔÚÖ÷Ñ­»·ÀïÃ¿Ãë»ã×ÜÒ»´Î£¨Í¬ÉÏ£¬ISR Àï²»´òÓ¡£© */
-            if( ++gTimeout > gTimeoutMax )
+            if( rfDtrPolGraceActive() )
+            {
+                /* ¡¾B'¡¿¿íÏŞÆÚ£º´Ó»úÕıÔÚÖØÆô£¬ÕâÆÚ¼äµÄÔÓ°ü²»²ÎÓëÁ´Â·ÀÏ»¯ */
+                gTimeout = 0;
+                gRfStatus = RF_STATUS_WAIT;
+            }
+            else if( ++gTimeout > gTimeoutMax )
             {
                 gRxDataStatus = DATA_STATUS_TIMEOUT;
                 PRINT("connect timeout.\n");
@@ -1021,6 +1143,14 @@ static void rfProcessCrcError( void )
 __HIGH_CODE
 static void rfProcessTimeout( void )
 {
+    /* ¡¾B'¡¿¿íÏŞÆÚ£º´Ó»úÕıÔÚÖØÆô£¬½ÓÊÕ´°¿Ú³¬Ê±²»ËãÁ´Â·ÀÏ»¯£¨·ñÔòÕÕÑù»á×ßµ½ disconnect£©*/
+    if( rfDtrPolGraceActive() )
+    {
+        gTimeout = 0;
+        gRfStatus = RF_STATUS_WAIT;
+        return;
+    }
+
     // PRINT("r -timeout %x\n",gRfStatus);
     if( gBoundStatus && ++gTimeout > gTimeoutMax )
     {
@@ -1278,7 +1408,7 @@ uint8_t RF_RxQuery( void *buf, typeBufSize *len, uint8_t usb_free )
  * @return  None.
  */
 /* ¹Ì¼ş±êÊ¶£º¿ª»ú´òÓ¡£¬±ãÓÚ´ÓÈÕÖ¾Ò»ÑÛÈ·ÈÏÉÕµÄÊÇÄÄÒ»°æ£¨±ğÔÙ³öÏÖ"²»ÖªµÀÉÕµÄÊÇÄÄ°æ"£© */
-#define RF_FW_TAG   "dongle fix7: livelock-fence + BSP cached for DTR"
+#define RF_FW_TAG   "dongle v1.0.0: DTR pol zero-interrupt + no-livelock + fast disconnect"
 
 __HIGH_CODE
 void RF_UartRxInit( void )
