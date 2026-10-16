@@ -76,4 +76,20 @@ stages:
           # GitHub 触发时会用 -p TAG=vX.Y.Z 把版本号带过来；手动运行或没带上就是空值，
           # 脚本会自动去查 GitHub 的最新 Release（:- 是防未定义时被 set -u 拦下）
           export TAG="${TAG:-}"
+
+          # ---- 临时诊断：令牌到底有没有注入进来（只打印长度和变量名，不打印值）----
+          # 定位完 Gitee 变量怎么配就删掉这一段。
+          echo "===== 变量注入诊断 ====="
+          echo "SYNC_TOKEN 长度: ${#SYNC_TOKEN}"
+          echo "TAG 值: '${TAG}'"
+          echo "环境里的相关变量名:"
+          env | cut -d= -f1 | grep -iE 'sync|gitee|go_|token|param' | sort | sed 's/^/    /' || echo "    （一个都没有）"
+          if [ -f GITEE_PARAMS ]; then
+            echo "GITEE_PARAMS 文件内容（值已打码）:"
+            sed 's/=.*/=<有值>/' GITEE_PARAMS | sed 's/^/    /'
+          else
+            echo "GITEE_PARAMS 文件: 不存在"
+          fi
+          echo "========================"
+
           bash tools/ci/sync-gitee-release.sh
