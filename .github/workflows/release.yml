@@ -277,14 +277,14 @@ jobs:
         continue-on-error: true
         timeout-minutes: 5
         env:
-          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
           TAG: ${{ steps.ver.outputs.tag }}
         run: |
           set -euo pipefail
 
           # 没配令牌就明确跳过（而不是静默），免得以后纳闷 Gitee 上怎么没有固件
-          if [ -z "${GITEE_TOKEN}" ]; then
-            echo "::notice::未配置 GITEE_TOKEN，本次跳过 Gitee 同步。配置方法见 README「固件下载」一节。"
+          if [ -z "${SYNC_TOKEN}" ]; then
+            echo "::notice::未配置 SYNC_TOKEN，本次跳过 Gitee 同步。配置方法见 README「固件下载」一节。"
             exit 0
           fi
 
@@ -293,7 +293,7 @@ jobs:
           export PATH="${HOME}/.local/bin:${PATH}"
           gitee --version
 
-          printf '%s' "${GITEE_TOKEN}" | gitee auth login --with-token
+          printf '%s' "${SYNC_TOKEN}" | gitee auth login --with-token
 
           # 触发 Gitee 上的 sync-release 流水线（对应 .workflow/sync-release.yml，--file 只给文件名）
           # -p 把版本号带过去，Gitee 那边就不必靠「GitHub 最新版」来猜；传不过去也不影响（脚本会自己查）

@@ -15,8 +15,8 @@
 #        脚本要建的是「某个 tag 的发行版」，所以那个 tag / 它指向的 commit 也得已经在
 #        Gitee 仓库里。触发时 Gitee 还没同步到的话，脚本会明确报出来，同步后重跑即可。
 #
-# 【令牌】GITEE_TOKEN 不写在仓库里，在 Gitee 的「流水线 → 变量」里配：
-#        变量名 GITEE_TOKEN，值填 Gitee 私人令牌（设置 → 私人令牌，勾 projects 权限）。
+# 【令牌】SYNC_TOKEN 不写在仓库里，在 Gitee 的「流水线 → 变量」里配：
+#        变量名 SYNC_TOKEN，值填 Gitee 私人令牌（设置 → 私人令牌，勾 projects 权限）。
 #        注意 Gitee 的流水线变量在命令里是文本替换，日志里可能看得到 —— 建议专门
 #        建一个只用来发版的令牌，别用全权限的。
 version: '1.0'
@@ -40,9 +40,13 @@ strategy:
 # 页面点一次「运行」即可 —— 脚本是幂等的，重复跑不会留重复附件。
 
 variables:
+  # 【命名】前缀**不要**用 GITEE_ 或 GO_ —— 那是 Gitee Go 的系统保留字。
+  #   实测踩过：GITEE_REPO 是内置参数（值就是 `owner/repo`），会覆盖这里配的值，
+  #   脚本拿到的是 "seahi007/Seahi-Serial-AirTTL" 而不是仓库名，当即出错。
+  #   同理 Gitee 界面上配令牌时变量名也得避开这个前缀，所以这里统一用 SYNC_。
   # Gitee 侧仓库（发到哪儿）
-  GITEE_OWNER: seahi007
-  GITEE_REPO: Seahi-Serial-AirTTL
+  SYNC_OWNER: seahi007
+  SYNC_REPO: Seahi-Serial-AirTTL
   # GitHub 侧仓库（固件从哪儿来）
   GH_REPO: SeaHi-Mo/Seahi-Serial-AirTTL
 
@@ -62,10 +66,13 @@ stages:
         commands: |
           set -e
           # Gitee 的流水线变量是文本替换，得在这里显式转成环境变量给脚本用
-          export GITEE_OWNER="${GITEE_OWNER}"
-          export GITEE_REPO="${GITEE_REPO}"
+          export SYNC_OWNER="${SYNC_OWNER}"
+          export SYNC_REPO="${SYNC_REPO}"
           export GH_REPO="${GH_REPO}"
-          export GITEE_TOKEN="${GITEE_TOKEN}"
+          # 令牌是敏感值：Gitee 的插件默认开了 set -x，替换后的真值会被 trace 打进
+          # 构建日志，这里先关掉回显再导出（尽力而为，仍建议用最小权限令牌 + 定期轮换）
+          set +x
+          export SYNC_TOKEN="${SYNC_TOKEN}"
           # GitHub 触发时会用 -p TAG=vX.Y.Z 把版本号带过来；手动运行或没带上就是空值，
           # 脚本会自动去查 GitHub 的最新 Release（:- 是防未定义时被 set -u 拦下）
           export TAG="${TAG:-}"

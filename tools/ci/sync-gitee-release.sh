@@ -8,23 +8,24 @@
 #
 # 由 Gitee Go 流水线调用，见 .workflow/sync-release.yml。
 #
-# 环境变量：
-#   GITEE_TOKEN      必填。Gitee 私人令牌（Gitee → 设置 → 私人令牌，勾选 projects 权限）
-#   GITEE_OWNER      必填。Gitee 用户名／组织名，例：seahi007
-#   GITEE_REPO       必填。Gitee 仓库名，例：Seahi-Serial-AirTTL
-#   GH_REPO          可选。GitHub 仓库，默认 SeaHi-Mo/Seahi-Serial-AirTTL
-#   TAG              可选。只同步指定版本（例 v1.0.0）；默认取 GitHub 的最新 Release
-#   GITHUB_TOKEN     可选。带上可避开 GitHub API 的匿名限额（60 次/小时/IP）
+# 环境变量（前缀特意避开 GITEE_ / GO_ —— 那是 Gitee Go 的系统保留字，
+#           GITEE_REPO 更是内置参数，会把同名自定义变量覆盖成 `owner/repo`）：
+#   SYNC_TOKEN      必填。Gitee 私人令牌（Gitee → 设置 → 私人令牌，勾选 projects 权限）
+#   SYNC_OWNER      必填。Gitee 用户名／组织名，例：seahi007
+#   SYNC_REPO       必填。Gitee 仓库名，例：Seahi-Serial-AirTTL
+#   GH_REPO         可选。GitHub 仓库，默认 SeaHi-Mo/Seahi-Serial-AirTTL
+#   TAG             可选。只同步指定版本（例 v1.0.0）；默认取 GitHub 的最新 Release
+#   GITHUB_TOKEN    可选。带上可避开 GitHub API 的匿名限额（60 次/小时/IP）
 #
 set -euo pipefail
 
 GH_REPO="${GH_REPO:-SeaHi-Mo/Seahi-Serial-AirTTL}"
 
-: "${GITEE_TOKEN:?缺少 GITEE_TOKEN（Gitee 私人令牌）}"
-: "${GITEE_OWNER:?缺少 GITEE_OWNER}"
-: "${GITEE_REPO:?缺少 GITEE_REPO}"
+: "${SYNC_TOKEN:?缺少 SYNC_TOKEN（Gitee 私人令牌）}"
+: "${SYNC_OWNER:?缺少 SYNC_OWNER}"
+: "${SYNC_REPO:?缺少 SYNC_REPO}"
 
-GITEE_API="https://gitee.com/api/v5/repos/${GITEE_OWNER}/${GITEE_REPO}"
+GITEE_API="https://gitee.com/api/v5/repos/${SYNC_OWNER}/${SYNC_REPO}"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
@@ -107,7 +108,7 @@ gitee_call() {   # 用法同 curl；把响应体写进 $TMP/resp.json，HTTP 码
 echo ""
 echo "== 查 Gitee 上的发行版 =="
 CODE="$(gitee_call -G "${GITEE_API}/releases/tags/${TAG}" \
-        --data-urlencode "access_token=${GITEE_TOKEN}")"
+        --data-urlencode "access_token=${SYNC_TOKEN}")"
 
 case "${CODE}" in
     200)
@@ -118,7 +119,7 @@ case "${CODE}" in
     404)
         echo "  还没有 ${TAG} 的发行版，创建"
         CODE="$(gitee_call -X POST "${GITEE_API}/releases" \
-                --data-urlencode "access_token=${GITEE_TOKEN}" \
+                --data-urlencode "access_token=${SYNC_TOKEN}" \
                 --data-urlencode "tag_name=${TAG}" \
                 --data-urlencode "name=${RELEASE_NAME}" \
                 --data-urlencode "body=${BODY}" \
@@ -129,7 +130,7 @@ case "${CODE}" in
         echo "  创建成功（id=${RELEASE_ID}）"
         ;;
     401|403)
-        fail "Gitee 拒绝了这个令牌（HTTP ${CODE}）—— 检查 GITEE_TOKEN 是否有效、是否勾了 projects 权限"
+        fail "Gitee 拒绝了这个令牌（HTTP ${CODE}）—— 检查 SYNC_TOKEN 是否有效、是否勾了 projects 权限"
         ;;
     *)
         fail "查 Gitee 发行版失败（HTTP ${CODE}）"
@@ -143,7 +144,7 @@ esac
 echo ""
 echo "== 列出 Gitee 上已有的附件 =="
 CODE="$(gitee_call -G "${GITEE_API}/releases/${RELEASE_ID}/attach_files" \
-        --data-urlencode "access_token=${GITEE_TOKEN}" \
+        --data-urlencode "access_token=${SYNC_TOKEN}" \
         --data-urlencode "per_page=100")"
 [ "${CODE:0:1}" = "2" ] || fail "列附件失败（HTTP ${CODE}）"
 EXISTING="$(jq -r '.[]? | "\(.name)\t\(.id)"' "${TMP}/resp.json" 2>/dev/null || true)"
@@ -160,7 +161,7 @@ for i in "${!ASSET_URLS[@]}"; do
     if [ -n "${old_id}" ]; then
         echo "  [${name}] Gitee 上已有同名附件（id=${old_id}），先删除"
         CODE="$(gitee_call -X DELETE \
-                "${GITEE_API}/releases/${RELEASE_ID}/attach_files/${old_id}?access_token=${GITEE_TOKEN}")"
+                "${GITEE_API}/releases/${RELEASE_ID}/attach_files/${old_id}?access_token=${SYNC_TOKEN}")"
         [ "${CODE:0:1}" = "2" ] || fail "删除旧附件 ${name} 失败（HTTP ${CODE}）"
     fi
 
@@ -171,7 +172,7 @@ for i in "${!ASSET_URLS[@]}"; do
 
     echo "  [${name}] 上传到 Gitee（$(wc -c < "${TMP}/${name}") 字节）"
     CODE="$(gitee_call -X POST "${GITEE_API}/releases/${RELEASE_ID}/attach_files" \
-            -F "access_token=${GITEE_TOKEN}" \
+            -F "access_token=${SYNC_TOKEN}" \
             -F "file=@${TMP}/${name};type=application/octet-stream")"
     [ "${CODE:0:1}" = "2" ] || fail "上传 ${name} 失败（HTTP ${CODE}）"
     echo "    → $(jq -r '.browser_download_url // "(无下载地址)"' "${TMP}/resp.json")"
@@ -179,4 +180,4 @@ done
 
 echo ""
 echo "== 同步完成 =="
-echo "  发行版页面：https://gitee.com/${GITEE_OWNER}/${GITEE_REPO}/releases/tag/${TAG}"
+echo "  发行版页面：https://gitee.com/${SYNC_OWNER}/${SYNC_REPO}/releases/tag/${TAG}"

@@ -190,7 +190,7 @@ DTR 这一路可以整条反相，适配 BOOT/EN 高有效的板子（或者板�
 - 两端共用 `rf.c`、`buf.c`、`my_printf.c`，业务层分别是从机的 `rf_uart_tx.c` + `uart.c`、主机的 `rf_uart_rx.c` + `usb_uart.c`。时序敏感的函数标了 `__HIGH_CODE`（放 RAM 执行），别随手删。
 - 更细的文档（协议字节级、芯片规格、外设与射频 API、烧录与调试、WSL 下 usbip 映射）在 [`skills/coder-ch570q-airttl/`](skills/coder-ch570q-airttl/) 里，关键取舍也写在源码注释里。
 - 发版：打 `v*` tag 触发 [`.github/workflows/release.yml`](.github/workflows/release.yml) 编译并发布 GitHub Release；发完它再用 [Gitee CLI](https://gitee.com/oschina/gitee-cli) 触发 [`.workflow/sync-release.yml`](.workflow/sync-release.yml)，把同一批固件搬到 Gitee 发行版。**Gitee 侧不编译**，只搬运（[`tools/ci/sync-gitee-release.sh`](tools/ci/sync-gitee-release.sh)），所以不消耗构建额度、也不需要那份 2.2 GB 的工具链。
-- 上面那条自动同步需要两个地方都配上 Gitee 私人令牌（勾 `projects` 权限），**没配就整段静默跳过**：GitHub 仓库 Settings → Secrets 里加 `GITEE_TOKEN`；Gitee 仓库的流水线 → 变量里也加一个 `GITEE_TOKEN`。触发时 Gitee 若还没同步到该 tag，同步完到 Gitee 流水线页面手动运行一次 `sync-release` 即可（脚本是幂等的，重跑不会留重复附件）。
+- 上面那条自动同步需要两个地方都配上 Gitee 私人令牌（勾 `projects` 权限），**没配就整段静默跳过**：GitHub 仓库 Settings → Secrets 里加 `SYNC_TOKEN`；Gitee 仓库的流水线 → 变量里也加一个 `SYNC_TOKEN`。触发时 Gitee 若还没同步到该 tag，同步完到 Gitee 流水线页面手动运行一次 `sync-release` 即可（脚本是幂等的，重跑不会留重复附件）。
 
 ## 许可证
 
