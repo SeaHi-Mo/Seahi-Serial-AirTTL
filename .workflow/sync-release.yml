@@ -1,0 +1,66 @@
+# Gitee Go 流水线：把 GitHub Release 已构建好的固件同步到 Gitee 发行版
+#
+# Gitee 侧**不编译**。代码是从 GitHub 镜像过来的，同一份源码编出来的东西必然一样，
+# 而在这儿重编要拖 2.2 GB 的 tools/toolchain 子模块、吃光免费构建额度；固件总共
+# 才 ~180 KB，直接搬运划算得多。编译仍然只发生在 GitHub Actions（release.yml）。
+#
+# 怎么被触发（三条路，任选其一即可）：
+#   ① GitHub 发完 Release 后自动触发 —— release.yml 末尾会装 Gitee CLI 并执行
+#      `gitee pipeline run -R seahi007/Seahi-Serial-AirTTL --ref master --file sync-release.yml`
+#   ② 手动：Gitee 仓库 → 流水线 → 这条流水线 → 运行
+#   ③ 定时兜底：见下面 triggers.schedule，默认每天凌晨 3 点跑一次，
+#      已经在 Gitee 上发布过的版本会直接跳过，不重复下载。不想要就删掉那两行。
+#
+# 【前提】这条流水线自己的 yml 得先在 Gitee 的 master 上（也就是仓库至少同步过一次）；
+#        脚本要建的是「某个 tag 的发行版」，所以那个 tag / 它指向的 commit 也得已经在
+#        Gitee 仓库里。触发时 Gitee 还没同步到的话，脚本会明确报出来，同步后重跑即可。
+#
+# 【令牌】GITEE_TOKEN 不写在仓库里，在 Gitee 的「流水线 → 变量」里配：
+#        变量名 GITEE_TOKEN，值填 Gitee 私人令牌（设置 → 私人令牌，勾 projects 权限）。
+#        注意 Gitee 的流水线变量在命令里是文本替换，日志里可能看得到 —— 建议专门
+#        建一个只用来发版的令牌，别用全权限的。
+version: '1.0'
+
+name: sync-release
+displayName: 同步固件到 Gitee 发行版
+
+strategy:
+  # 上一次没跑完就让新的排队，别并发去 GitHub 拉同一份东西
+  blocking: true
+  stepTimeout: 30
+
+triggers:
+  # 定时兜底：每天凌晨 3 点检查一次 GitHub 有没有新版本。
+  # Gitee Go 的 cron 是「分 时 日 月 星期」，星期位用 ? 占位（不能和「日」同时用 *）。
+  schedule:
+    - cron: '0 3 * * ?'
+
+variables:
+  # Gitee 侧仓库（发到哪儿）
+  GITEE_OWNER: seahi007
+  GITEE_REPO: Seahi-Serial-AirTTL
+  # GitHub 侧仓库（固件从哪儿来）
+  GH_REPO: SeaHi-Mo/Seahi-Serial-AirTTL
+
+stages:
+  - name: sync
+    displayName: 同步发行版
+    strategy: naturally
+    trigger: auto
+    executor: []
+    steps:
+      # 用 build@gcc 只是因为它提供一台带 git/curl/jq 的 Ubuntu 构建机 ——
+      # 社区版的云端插件里没有更通用的「跑一段 shell」的选项。
+      - step: build@gcc
+        name: sync_release
+        displayName: 从 GitHub 下载固件并发布到 Gitee 发行版
+        gccVersion: '10.3'
+        commands: |
+          set -e
+          # Gitee 的流水线变量是文本替换，得在这里显式转成环境变量给脚本用
+          export GITEE_OWNER="${GITEE_OWNER}"
+          export GITEE_REPO="${GITEE_REPO}"
+          export GH_REPO="${GH_REPO}"
+          export GITEE_TOKEN="${GITEE_TOKEN}"
+          # 想只同步某个版本就再加一行：export TAG="v1.0.0"
+          bash tools/ci/sync-gitee-release.sh

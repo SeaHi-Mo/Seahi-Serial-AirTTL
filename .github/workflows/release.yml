@@ -266,3 +266,38 @@ jobs:
           echo "当前 Latest: $(curl -s -H "Authorization: Bearer ${GH_TOKEN}" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest" \
             | python3 -c "import json,sys;print(json.load(sys.stdin).get('tag_name','?'))" 2>/dev/null || echo '?')"
+
+      # ---- 触发 Gitee 流水线，把固件同步到 Gitee 发行版（国内用户下载方便）----
+      # Gitee 侧不重新编译，只把这里刚发布的产物搬过去，见 .workflow/sync-release.yml。
+      # 这一步失败**不影响**本次发布：GitHub Release 此时已经发好了，Gitee 只是附加的分发点，
+      # 所以这里只发警告、不把整条 workflow 判死。失败时到 Gitee 流水线页面手动点一次运行即可。
+      - name: 触发 Gitee 流水线同步固件
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # 没配令牌就明确跳过（而不是静默），免得以后纳闷 Gitee 上怎么没有固件
+          if [ -z "${GITEE_TOKEN}" ]; then
+            echo "::notice::未配置 GITEE_TOKEN，本次跳过 Gitee 同步。配置方法见 README「固件下载」一节。"
+            exit 0
+          fi
+
+          # 装官方 Gitee CLI（Go 二进制，默认落到 ~/.local/bin）
+          curl -fsSL https://gitee.com/oschina/gitee-cli/raw/main/scripts/install.sh | sh
+          export PATH="${HOME}/.local/bin:${PATH}"
+          gitee --version
+
+          printf '%s' "${GITEE_TOKEN}" | gitee auth login --with-token
+
+          # 触发 Gitee 上的 sync-release 流水线（对应 .workflow/sync-release.yml，--file 只给文件名）
+          if ! gitee pipeline run \
+                 -R seahi007/Seahi-Serial-AirTTL \
+                 --ref master \
+                 --file sync-release.yml \
+                 --json=id,buildNumber,status; then
+            echo "::warning::触发 Gitee 流水线失败（不影响本次 GitHub 发布）。"
+            echo "  最常见原因：Gitee 仓库还没同步到最新的 master，或者 .workflow/sync-release.yml 还没过去。"
+            echo "  处置：先在 Gitee 同步仓库，然后到 Gitee 的「流水线」页面手动运行一次 sync-release。"
+          fi
