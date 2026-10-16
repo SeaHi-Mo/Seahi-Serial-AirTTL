@@ -66,5 +66,7 @@ stages:
           export GITEE_REPO="${GITEE_REPO}"
           export GH_REPO="${GH_REPO}"
           export GITEE_TOKEN="${GITEE_TOKEN}"
-          # 想只同步某个版本就再加一行：export TAG="v1.0.0"
+          # GitHub 触发时会用 -p TAG=vX.Y.Z 把版本号带过来；手动运行或没带上就是空值，
+          # 脚本会自动去查 GitHub 的最新 Release（:- 是防未定义时被 set -u 拦下）
+          export TAG="${TAG:-}"
           bash tools/ci/sync-gitee-release.sh

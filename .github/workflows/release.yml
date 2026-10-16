@@ -272,6 +272,10 @@ jobs:
       # 这一步失败**不影响**本次发布：GitHub Release 此时已经发好了，Gitee 只是附加的分发点，
       # 所以这里只发警告、不把整条 workflow 判死。失败时到 Gitee 流水线页面手动点一次运行即可。
       - name: 触发 Gitee 流水线同步固件
+        # 纯加分项：装不上 CLI、登录失败、Gitee 还没同步……都不该把「发布成功」变成红叉
+        #（GitHub Release 此时已经发好了），所以整步允许失败；细节仍在日志里，失败会高亮。
+        continue-on-error: true
+        timeout-minutes: 5
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           TAG: ${{ steps.ver.outputs.tag }}
@@ -292,10 +296,12 @@ jobs:
           printf '%s' "${GITEE_TOKEN}" | gitee auth login --with-token
 
           # 触发 Gitee 上的 sync-release 流水线（对应 .workflow/sync-release.yml，--file 只给文件名）
+          # -p 把版本号带过去，Gitee 那边就不必靠「GitHub 最新版」来猜；传不过去也不影响（脚本会自己查）
           if ! gitee pipeline run \
                  -R seahi007/Seahi-Serial-AirTTL \
                  --ref master \
                  --file sync-release.yml \
+                 -p "TAG=${TAG}" \
                  --json=id,buildNumber,status; then
             echo "::warning::触发 Gitee 流水线失败（不影响本次 GitHub 发布）。"
             echo "  最常见原因：Gitee 仓库还没同步到最新的 master，或者 .workflow/sync-release.yml 还没过去。"
