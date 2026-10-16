@@ -39,29 +39,34 @@ triggers:
         - master
 
 stages:
-  - stage:
-      name: build
-      displayName: 编译
-      # naturally：失败只影响自己这条链，不做快速失败（这里本来也只有一条链）
-      strategy: naturally
-      trigger: auto
-      steps:
-        # build@gcc 的基础镜像是 Ubuntu 20.04，自带 git / wget / zip 等常规工具。
-        # gccVersion 只是宿主自带的 GCC（用于跑 cmake/make 本身），
-        # 真正的交叉编译器是仓库内 tools/toolchain 里沁恒定制的 riscv-wch-elf-gcc。
-        - step: build@gcc
-          name: build_firmware
-          displayName: 编译 RF_Uart / RF_UartDongle / RF_TEST
-          gccVersion: '10.3'
-          commands: |
-            set -e
-            # 编译逻辑全在脚本里，本地和 CI 共用同一份，见 tools/ci/build-all.sh
-            bash tools/ci/build-all.sh
-          # 暂存构建产物（7 天后自动清除；不会进制品库）
-          artifacts:
-            - name: FIRMWARE
-              path:
-                - ./dist
+  # 【结构】stages 的每个元素本身就是「阶段」，name / displayName / strategy / trigger /
+  # steps 全部平级挂在它下面。**不要**写成 `- stage:` 再包一层 —— 那是 2022 年的旧版格式
+  # （配套 `xxxbuild@1` + `inputs:` 用，早已废弃），套上去 Gitee 会报
+  # `stages[0].steps 配置缺失或格式错误`。
+  - name: build
+    displayName: 编译
+    # naturally：失败只影响自己这条链，不做快速失败（这里本来也只有一条链）
+    strategy: naturally
+    trigger: auto
+    # 空数组 = 用云端默认构建环境（官方示例里该字段是固定项）
+    executor: []
+    steps:
+      # build@gcc 的基础镜像是 Ubuntu 20.04，自带 git / wget / zip 等常规工具。
+      # gccVersion 只是宿主自带的 GCC（用于跑 cmake/make 本身），
+      # 真正的交叉编译器是仓库内 tools/toolchain 里沁恒定制的 riscv-wch-elf-gcc。
+      - step: build@gcc
+        name: build_firmware
+        displayName: 编译 RF_Uart / RF_UartDongle / RF_TEST
+        gccVersion: '10.3'
+        commands: |
+          set -e
+          # 编译逻辑全在脚本里，本地和 CI 共用同一份，见 tools/ci/build-all.sh
+          bash tools/ci/build-all.sh
+        # 暂存构建产物（7 天后自动清除；不会进制品库）
+        artifacts:
+          - name: FIRMWARE
+            path:
+              - ./dist
 
 # ---------------------------------------------------------------------------
 # 工具链加速（可选，不改也能跑）
