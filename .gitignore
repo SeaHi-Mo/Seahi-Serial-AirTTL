@@ -38,6 +38,9 @@ desktop.ini
 # 本地调试记录（仅本地保留，不进仓库）
 DEBUG-NOTES.md
 
+# 编译脚本（tools/ci/build-all.sh）在仓库根目录留下的日志：只在当次构建内有意义
+/*_build.log
+
 # 丢包测试每次运行生成的报告（可重跑生成；脚本 tools/loss-test/baud100_test.py 已入库）
 tools/loss-test/baud100-*.md
 __pycache__/
