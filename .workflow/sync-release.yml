@@ -8,8 +8,8 @@
 #   ① GitHub 发完 Release 后自动触发 —— release.yml 末尾会装 Gitee CLI 并执行
 #      `gitee pipeline run -R seahi007/Seahi-Serial-AirTTL --ref master --file sync-release.yml`
 #   ② 手动：Gitee 仓库 → 流水线 → 这条流水线 → 运行
-#   ③ 定时兜底：见下面 triggers.schedule，默认每天凌晨 3 点跑一次，
-#      已经在 Gitee 上发布过的版本会直接跳过，不重复下载。不想要就删掉那两行。
+#   ③ 定时兜底：可选，默认没开。Gitee 手写 cron 容易判「表达式无效」，要加请走
+#      可视化界面（见文件末尾 triggers 处的说明）。
 #
 # 【前提】这条流水线自己的 yml 得先在 Gitee 的 master 上（也就是仓库至少同步过一次）；
 #        脚本要建的是「某个 tag 的发行版」，所以那个 tag / 它指向的 commit 也得已经在
@@ -29,11 +29,15 @@ strategy:
   blocking: true
   stepTimeout: 30
 
-triggers:
-  # 定时兜底：每天凌晨 3 点检查一次 GitHub 有没有新版本。
-  # Gitee Go 的 cron 是「分 时 日 月 星期」，星期位用 ? 占位（不能和「日」同时用 *）。
-  schedule:
-    - cron: '0 3 * * ?'
+# 【定时触发（可选，默认没开）】
+# 原来这里写过 `schedule: - cron: '0 3 * * ?'`，Gitee 判「定时任务表达式无效」。
+# 官方文档给的格式是 `M H D m d y`（示例 '0 */2 * * ?'），和上面那串同构 —— 校验不过，
+# 估计这节和「任务编排」页一样是旧版遗留，实际解析器未必认 `?`。
+# 要加定时就别手写 cron：去 Gitee 的流水线 → 定时触发可视化界面里配，
+# 保存时它会回写一条校验通过的表达式到本文件。
+#
+# 不加也不影响主链路：GitHub 发完版会主动触发本流水线；万一漏了，到 Gitee
+# 页面点一次「运行」即可 —— 脚本是幂等的，重复跑不会留重复附件。
 
 variables:
   # Gitee 侧仓库（发到哪儿）
